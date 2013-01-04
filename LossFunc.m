@@ -55,7 +55,7 @@ classdef LossFunc < handle
             if ((sum(Yf == 1) + sum(Yf == 0)) < numel(Yf))
                 error('LossFunc.cross_entropy: values in Y 0/1.');
             end
-            if ((sum(Yhf < eps) + sum(Yhf > 1)) > 0)
+            if ((sum(Yhf < 0) + sum(Yhf > 1)) > 0)
                 error('LossFunc.cross_entropy: Yh rows must be distributions.');
             end
             L = -Y .* log(Yh);

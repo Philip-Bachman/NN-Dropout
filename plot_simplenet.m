@@ -1,6 +1,14 @@
 function [ fig ] = plot_simplenet( X, Y, net, grid_res, grid_buffer, fig )
 %
 
+if ((min(Y(:)) >= 0) && (max(Y(:) <= 1)))
+    Y = (Y - 0.5) .* 5;
+end
+
+if (size(Y,2) == 2)
+    Y = Y(:,1) - Y(:,2);
+end
+
 obs_dim = net.layer_sizes(1);
 
 if ~exist('fig','var')
@@ -28,7 +36,14 @@ for col=1:grid_res,
         fprintf('.');
     end
     col_points = [Xg(:,col) Yg(:,col) zeros(grid_res,obs_dim-2)];
-    Fg(:,col) = net.feedforward(col_points);
+    Y_col = net.feedforward(col_points);
+    if ((min(Y_col(:)) >= 0) && (max(Y_col(:) <= 1)))
+        Y_col = (Y_col - 0.5) .* 5;
+    end
+    if (size(Y_col,2) == 2)
+        Y_col = Y_col(:,1) - Y_col(:,2);
+    end
+    Fg(:,col) = Y_col;
 end
 fprintf('\n');
 

@@ -27,6 +27,10 @@ classdef ActFunc < handle
                     acts = ActFunc.sigmoid_ff(pre_values, pre_weights);
                 case 3
                     acts = ActFunc.tanh_ff(pre_values, pre_weights);
+                case 4
+                    acts = ActFunc.logexp_ff(pre_values, pre_weights);
+                case 5
+                    acts = ActFunc.softmax_ff(pre_values, pre_weights);
                 otherwise
                     error('No valid activation function type selected.');
             end
@@ -45,6 +49,12 @@ classdef ActFunc < handle
                         post_grads, post_weights, pre_values, pre_weights);
                 case 3
                     node_grads = ActFunc.tanh_bp(...
+                        post_grads, post_weights, pre_values, pre_weights);
+                case 4
+                    node_grads = ActFunc.logexp_bp(...
+                        post_grads, post_weights, pre_values, pre_weights);
+                case 5
+                    node_grads = ActFunc.softmax_bp(...
                         post_grads, post_weights, pre_values, pre_weights);
                 otherwise
                     error('No valid activation function type selected.');
@@ -147,6 +157,73 @@ classdef ActFunc < handle
             %
             tanh_grads = 1 - (tanh(pre_acts * pre_weights)).^2;
             cur_grads = tanh_grads .* (post_grads * post_weights');
+            return
+        end
+        
+        function [ cur_acts ] = logexp_ff(pre_acts, pre_weights)
+            % Compute simple logexp activation function log(1 + exp(x)).
+            %
+            % Parameters:
+            %   pre_acts: previous layer activations (obs_count x pre_dim)
+            %   pre_weights: weights from pre -> cur (pre_dim x cur_dim)
+            % Outputs:
+            %   cur_acts: activations at current layer (obs_count x cur_dim)
+            %
+            cur_acts = log(1 + exp(pre_acts * pre_weights));
+            return
+        end
+        
+        function [ cur_grads ] = ...
+                logexp_bp(post_grads, post_weights, pre_acts, pre_weights)
+            % Compute the gradient for each node in the current layer given
+            % the gradients in post_grads for nodes at the next layer.
+            % 
+            % Parameters:
+            %   post_grads: grads at next layer (obs_dim x post_dim)
+            %   post_weights: weights from current to post (cur_dim x post_dim)
+            %   pre_acts: activations at previous layer (obs_dim x pre_dim)
+            %   pre_weights: weights from prev to current (pre_dim x cur_dim)
+            % Outputs:
+            %   cur_grads: gradients at current layer (obs_dim x cur_dim)
+            %
+            exp_vals = exp(pre_acts * pre_weights);
+            logexp_grads = exp_vals ./ (exp_vals + 1);
+            cur_grads = logexp_grads .* (post_grads * post_weights');
+            return
+        end
+        
+        function [ cur_acts ] = softmax_ff(pre_acts, pre_weights)
+            % Compute simple softmax activation function where each row in the
+            % matrix (pre_acts * pre_weights) is "softmaxed".
+            %
+            % Parameters:
+            %   pre_acts: previous layer activations (obs_count x pre_dim)
+            %   pre_weights: weights from pre -> cur (pre_dim x cur_dim)
+            % Outputs:
+            %   cur_acts: activations at current layer (obs_count x cur_dim)
+            %
+            exp_vals = exp(pre_acts * pre_weights);
+            cur_acts = bsxfun(@rdivide, exp_vals, sum(exp_vals,2));
+            return
+        end
+        
+        function [ cur_grads ] = ...
+                softmax_bp(post_grads, post_weights, pre_acts, pre_weights)
+            % Compute the gradient for each node in the current layer given
+            % the gradients in post_grads for nodes at the next layer.
+            % 
+            % Parameters:
+            %   post_grads: grads at next layer (obs_dim x post_dim)
+            %   post_weights: weights from current to post (cur_dim x post_dim)
+            %   pre_acts: activations at previous layer (obs_dim x pre_dim)
+            %   pre_weights: weights from prev to current (pre_dim x cur_dim)
+            % Outputs:
+            %   cur_grads: gradients at current layer (obs_dim x cur_dim)
+            %
+            exp_vals = exp(pre_acts * pre_weights);
+            sm_vals = bsxfun(@rdivide, exp_vals, sum(exp_vals,2));
+            sm_grads = sm_vals .* (1 - sm_vals);
+            cur_grads = sm_grads .* (post_grads * post_weights');
             return
         end
         

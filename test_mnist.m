@@ -4,15 +4,17 @@
 load('mnist_data.mat');
 X = X_mnist;
 Y = Y_mnist;
-X = X((Y==2)|(Y==4)|(Y==1),:);
-Y = Y((Y==2)|(Y==4)|(Y==1),:);
+X = X((Y < 5),:);
+Y = Y((Y < 5),:);
 X = ZMUV(double(X));
 Y_vals = unique(Y);
-Ym = -ones(size(X,1),numel(Y_vals));
+Ym = zeros(size(X,1),numel(Y_vals));
 for i=1:size(X,1),
     for j=1:numel(Y_vals),
         if (Y(i) == Y_vals(j))
             Ym(i,j) = 1;
+        else
+            Ym(i,j) = -1;
         end
     end
 end
@@ -21,7 +23,7 @@ Y = Ym;
 obs_dim = size(X,2);
 out_dim = size(Y,2);
 obs_count = size(X,1);
-train_count = round(obs_count * 0.5);
+train_count = round(obs_count * 0.75);
 
 % Split data into training and testing portions
 tr_idx = randsample(obs_count,train_count,false);
@@ -44,7 +46,7 @@ net.init_weights(0.1);
 
 % Set up parameter struct for updates
 params = struct();
-params.epochs = 5000;
+params.epochs = 1000;
 params.start_rate = 1.0;
 params.decay_rate = 0.1^(1 / params.epochs);
 params.momentum = 0.5;

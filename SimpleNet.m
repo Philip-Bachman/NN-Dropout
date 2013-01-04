@@ -154,7 +154,7 @@ classdef SimpleNet < handle
                 else
                     func = self.act_func;
                     post_weights = drop_weights{l_num+1};
-                    post_weights = post_weights(1:end-1,:);
+                    post_weights(end,:) = [];
                     post_grads = node_grads{l_num+1};
                 end
                 pre_acts = SimpleNet.bias(layer_acts{l_num});
@@ -173,7 +173,7 @@ classdef SimpleNet < handle
             return
         end
         
-        function [ Yh ] =  complex_update(self, X, Y, params)
+        function [ result ] =  complex_update(self, X, Y, params)
             % Do fully parameterized training for a SimpleNet
             if ~exist('params','var')
                 params = struct();
@@ -214,6 +214,7 @@ classdef SimpleNet < handle
             obs_count = size(X,1);
             rate = params.start_rate;
             dW_pre = cell(1,self.depth-1);
+            max_grad_norms = zeros(params.epochs, self.depth-1);
             fprintf('Updating weights (%d epochs):\n', params.epochs);
             for e=1:params.epochs,
                 idx = randsample(obs_count, params.batch_size, false);
@@ -228,6 +229,8 @@ classdef SimpleNet < handle
                         % weighted mixture of the current gradients and the
                         % previous update.
                         l_grads = res.layer_grads{i};
+                        l_grads_norms = sqrt(sum(l_grads.^2,1));
+                        max_grad_norms(e, i) = max(l_grads_norms);
                         l_weights = self.layer_weights{i};
                         if (e == 1)
                             dW = rate * l_grads;
@@ -249,7 +252,7 @@ classdef SimpleNet < handle
                 % Decay the learning rate after performing update
                 rate = rate * params.decay_rate;
                 % Compute and display the loss following this epoch
-                if (mod(e, 50) == 0)
+                if (mod(e, 100) == 0)
                     Yh = self.feedforward(X);
                     [max_vals Y_idx] = max(Y,[],2);
                     [max_vals Yh_idx] = max(Yh,[],2);
@@ -269,7 +272,9 @@ classdef SimpleNet < handle
                 end
             end
             fprintf('\n');
-            Yh = self.feedforward(X);
+            result = struct();
+            result.Yh = self.feedforward(X);
+            result.max_grad_norms = max_grad_norms;
             return
         end
         
