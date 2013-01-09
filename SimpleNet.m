@@ -77,7 +77,12 @@ classdef SimpleNet < handle
                 end
                 % Get weights connecting current layer to previous layer
                 W = self.layer_weights{i};
-                if (self.half_weights == 1)
+                if ((self.half_weights == 1) && (i > 1))
+                    % Halve the weights when net was trained with dropout rate
+                    % near 0.5 for hidden nodes, to approximate sampling from
+                    % the implied distribution over network architectures.
+                    % Weights for first layer are not halved, as they modulate
+                    % inputs from observed rather than hidden nodes.
                     W = W ./ 2;
                 end
                 % Compute activations at the current layer via feedforward
@@ -214,11 +219,24 @@ classdef SimpleNet < handle
             obs_count = size(X,1);
             rate = params.start_rate;
             dW_pre = cell(1,self.depth-1);
+            train_accs = zeros(1,params.epochs);
+            train_loss = zeros(1,params.epochs);
+            if (params.do_validate)
+                test_accs = zeros(1,params.epochs);
+                test_loss = zeros(1,params.epochs);
+            end
             max_grad_norms = zeros(params.epochs, self.depth-1);
+            all_idx = 1:obs_count;
+            batch_size = params.batch_size;
             fprintf('Updating weights (%d epochs):\n', params.epochs);
             for e=1:params.epochs,
-                idx = randsample(obs_count, params.batch_size, false);
+                idx = randsample(all_idx, batch_size, false);
                 Xtr = X(idx,:);
+                if (1 == 1)
+                    noise_scales = 0.05 * std(Xtr);
+                    noise = bsxfun(@times, randn(size(Xtr)), noise_scales);
+                    Xtr = Xtr + noise;
+                end
                 Ytr = Y(idx,:);
                 for r=1:params.batch_rounds,
                     % Run backprop to compute gradients for this training batch
@@ -251,8 +269,8 @@ classdef SimpleNet < handle
                 end
                 % Decay the learning rate after performing update
                 rate = rate * params.decay_rate;
-                % Compute and display the loss following this epoch
-                if (mod(e, 100) == 0)
+                % Occasionally recompute and display the loss and accuracy
+                if ((e == 1) || (mod(e, 100) == 0))
                     Yh = self.feedforward(X);
                     [max_vals Y_idx] = max(Y,[],2);
                     [max_vals Yh_idx] = max(Yh,[],2);
@@ -270,11 +288,23 @@ classdef SimpleNet < handle
                         fprintf('    %d: %.4f, %.4f\n', e, mean(L(:)), acc);
                     end
                 end
+                train_loss(e) = mean(L(:));
+                train_accs(e) = acc;
+                if (params.do_validate)
+                    test_loss(e) = mean(L_v(:));
+                    test_accs(e) = acc_v;
+                end
             end
             fprintf('\n');
             result = struct();
             result.Yh = self.feedforward(X);
             result.max_grad_norms = max_grad_norms;
+            result.train_accs = train_accs;
+            result.train_loss = train_loss;
+            if (params.do_validate)
+                result.test_accs = test_accs;
+                result.test_loss = test_loss;
+            end
             return
         end
         
@@ -286,6 +316,21 @@ classdef SimpleNet < handle
             Xb = [X ones(size(X,1),1)];
             return
         end
+        
+        function [ samples ] = weighted_sample( values, sample_count, weights )
+            % Do weighted sampling of the vlaues in 'value' using a probability
+            % distribution determined by 'weights', without replacement.
+            samples = zeros(1, sample_count);
+            free_values = values;
+            free_weights = weights;
+            for i=1:sample_count,
+                s_idx = randsample(numel(free_weights), 1, true, free_weights);
+                free_weights(s_idx) = 0;
+                samples(i) = free_values(s_idx);
+            end
+            return
+        end
+            
     end 
     
 end

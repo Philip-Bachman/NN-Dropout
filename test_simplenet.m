@@ -1,9 +1,9 @@
 % Generate some simple data with which to test the SimpleNet class
-obs_dim = 10;
+obs_dim = 4;
 obs_count = 2000;
-train_count = 250;
-obs_noise = 0.10;
-label_noise = 0.05;
+train_count = 1000;
+obs_noise = 0.0;
+label_noise = 0.0;
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Generate observations and labels by some random process %
@@ -20,21 +20,15 @@ label_noise = 0.05;
 %     end
 % end
 
-[ X Yi ] = data_grid( obs_count, 0.35, 0.45, 4, 3 );
+[ Xi Yi ] = data_grid( obs_count, 0.35, 0.45, 4, 3 );
 for i=1:numel(Yi),
     if (rand() < label_noise)
         Yi(i) = -Yi(i);
     end
 end
+X = ZMUV([Xi randn(obs_count,obs_dim-2)]);
 Y = zeros(obs_count, 2);
-X = [X zeros(obs_count,obs_dim-2)];
-rbf_idx = randsample(obs_count,obs_dim-2,false);
 for i=1:obs_count,
-    for j=1:numel(rbf_idx),
-        r = rbf_idx(j);
-        %X(i,j+2) = exp(-sum((X(i,1:2)-X(r,1:2)).^2));
-        X(i,j+2) = randn();
-    end
     if (Yi(i) == 1)
         Y(i,1) = 1;
         Y(i,2) = -1;
@@ -43,7 +37,6 @@ for i=1:obs_count,
         Y(i,2) = 1;
     end
 end
-X = ZMUV(X);
 
 % Split data into training and testing portions
 X_tr = X(1:train_count,:);
@@ -56,7 +49,7 @@ Y_te = Y(train_count+1:end,:);
 act_func = ActFunc(2);
 out_func = ActFunc(1);
 loss_func = LossFunc(3);
-layer_sizes = [obs_dim 80 80 2];
+layer_sizes = [obs_dim 50 50 50 2];
 
 % Generate a SimpleNet instance
 net = SimpleNet(layer_sizes, act_func, out_func, loss_func);
@@ -68,8 +61,8 @@ params = struct();
 params.epochs = 10000;
 params.start_rate = 1.0;
 params.decay_rate = 0.1^(1 / params.epochs);
-params.momentum = 0.0;
-params.weight_bound = 20;
+params.momentum = 0.5;
+params.weight_bound = 25;
 params.batch_size = 100;
 params.batch_rounds = 1;
 params.dr_obs = 0.0;
