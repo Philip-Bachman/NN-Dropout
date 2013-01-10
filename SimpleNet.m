@@ -232,11 +232,6 @@ classdef SimpleNet < handle
             for e=1:params.epochs,
                 idx = randsample(all_idx, batch_size, false);
                 Xtr = X(idx,:);
-                if (1 == 1)
-                    noise_scales = 0.05 * std(Xtr);
-                    noise = bsxfun(@times, randn(size(Xtr)), noise_scales);
-                    Xtr = Xtr + noise;
-                end
                 Ytr = Y(idx,:);
                 for r=1:params.batch_rounds,
                     % Run backprop to compute gradients for this training batch
