@@ -227,6 +227,11 @@ classdef SimpleNet < handle
             end
             max_grad_norms = zeros(params.epochs, self.depth-1);
             all_idx = 1:obs_count;
+            if (obs_count > 10000)
+                t_idx = randsample(all_idx, 10000);
+            else
+                t_idx = all_idx;
+            end
             batch_size = params.batch_size;
             fprintf('Updating weights (%d epochs):\n', params.epochs);
             for e=1:params.epochs,
@@ -266,10 +271,10 @@ classdef SimpleNet < handle
                 rate = rate * params.decay_rate;
                 % Occasionally recompute and display the loss and accuracy
                 if ((e == 1) || (mod(e, 100) == 0))
-                    Yh = self.feedforward(X);
-                    [max_vals Y_idx] = max(Y,[],2);
+                    Yh = self.feedforward(X(t_idx,:));
+                    [max_vals Y_idx] = max(Y(t_idx,:),[],2);
                     [max_vals Yh_idx] = max(Yh,[],2);
-                    L = self.loss_func.evaluate(Yh, Y);
+                    L = self.loss_func.evaluate(Yh, Y(t_idx,:));
                     acc = sum(Y_idx == Yh_idx) / numel(Y_idx);
                     if (params.do_validate)
                         Yh_v = self.feedforward(params.X_v);

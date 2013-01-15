@@ -2,7 +2,7 @@
 % Load and "preprocess" MNIST digit data %
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 load('mnist_data.mat');
-idx = randsample(size(X_mnist,1),30000);
+idx = randsample(size(X_mnist,1),40000);
 X = X_mnist(idx,:);
 Y = Y_mnist(idx,:);
 % X = X((Y < 5),:);
@@ -44,18 +44,18 @@ layer_sizes = [obs_dim 1500 1500 out_dim];
 % Generate a SimpleNet instance
 net = SimpleNet(layer_sizes, act_func, out_func, loss_func);
 net.init_weights(0.1);
-net.drop_stride = 5;
+net.drop_stride = 1;
 
 % Set up parameter struct for updates
 params = struct();
-params.epochs = 10000;
+params.epochs = 15000;
 params.start_rate = 1.0;
 params.decay_rate = 0.1^(1 / params.epochs);
 params.momentum = 0.5;
 params.weight_bound = 20;
 params.batch_size = 100;
 params.batch_rounds = 1;
-params.dr_obs = 0.1;
+params.dr_obs = 0.0;
 params.dr_node = 0.5;
 params.do_validate = 1;
 params.X_v = X_te;
