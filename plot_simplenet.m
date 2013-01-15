@@ -9,7 +9,11 @@ if (size(Y,2) == 2)
     Y = Y(:,1) - Y(:,2);
 end
 
-obs_dim = net.layer_sizes(1);
+try
+    obs_dim = net.layer_sizes(1);
+catch
+    obs_dim = net.layer_nsizes(1);
+end
 
 if ~exist('fig','var')
     fig = figure();

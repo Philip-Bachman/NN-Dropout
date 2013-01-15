@@ -30,6 +30,8 @@ classdef ActFunc < handle
                 case 4
                     acts = ActFunc.logexp_ff(pre_values, pre_weights);
                 case 5
+                    acts = ActFunc.relu_ff(pre_values, pre_weights);
+                case 6
                     acts = ActFunc.softmax_ff(pre_values, pre_weights);
                 otherwise
                     error('No valid activation function type selected.');
@@ -54,6 +56,9 @@ classdef ActFunc < handle
                     node_grads = ActFunc.logexp_bp(...
                         post_grads, post_weights, pre_values, pre_weights);
                 case 5
+                    node_grads = ActFunc.relu_bp(...
+                        post_grads, post_weights, pre_values, pre_weights);
+                case 6
                     node_grads = ActFunc.softmax_bp(...
                         post_grads, post_weights, pre_values, pre_weights);
                 otherwise
@@ -189,6 +194,37 @@ classdef ActFunc < handle
             exp_vals = exp(pre_acts * pre_weights);
             logexp_grads = exp_vals ./ (exp_vals + 1);
             cur_grads = logexp_grads .* (post_grads * post_weights');
+            return
+        end
+        
+        function [ cur_acts ] = relu_ff(pre_acts, pre_weights)
+            % Compute simple rectified linear activation function.
+            %
+            % Parameters:
+            %   pre_acts: previous layer activations (obs_count x pre_dim)
+            %   pre_weights: weights from pre -> cur (pre_dim x cur_dim)
+            % Outputs:
+            %   cur_acts: activations at current layer (obs_count x cur_dim)
+            %
+            cur_acts = max(0, pre_acts * pre_weights);
+            return
+        end
+        
+        function [ cur_grads ] = ...
+                relu_bp(post_grads, post_weights, pre_acts, pre_weights)
+            % Compute the gradient for each node in the current layer given
+            % the gradients in post_grads for nodes at the next layer.
+            % 
+            % Parameters:
+            %   post_grads: grads at next layer (obs_dim x post_dim)
+            %   post_weights: weights from current to post (cur_dim x post_dim)
+            %   pre_acts: activations at previous layer (obs_dim x pre_dim)
+            %   pre_weights: weights from prev to current (pre_dim x cur_dim)
+            % Outputs:
+            %   cur_grads: gradients at current layer (obs_dim x cur_dim)
+            %
+            nz_acts = (pre_acts * pre_weights) > 0;
+            cur_grads = (post_grads * post_weights') .* nz_acts;
             return
         end
         

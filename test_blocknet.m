@@ -49,24 +49,22 @@ Y_te = Y(train_count+1:end,:);
 act_func = ActFunc(2);
 out_func = ActFunc(1);
 loss_func = LossFunc(3);
-layer_sizes = [obs_dim 64 64 64 2];
-
-% Generate a SimpleNet instance
-net = SimpleNet(layer_sizes, act_func, out_func, loss_func);
-net.init_weights(1.0);
-net.drop_stride = 4;
+% Create the network object
+net = BlockNet(act_func, out_func, loss_func);
+% Setup blocky parameters
+layer_bsizes = [1 5 5 5 1];
+layer_bcounts = [obs_dim 15 15 15 2];
 
 % Set up parameter struct for updates
 params = struct();
-params.epochs = 15000;
+params.epochs = 10000;
 params.start_rate = 1.0;
-params.decay_rate = 0.1^(1 / params.epochs);
+params.decay_rate = 0.2^(1 / params.epochs);
 params.momentum = 0.5;
-params.weight_bound = 25;
+params.weight_bound = 50;
 params.batch_size = 100;
 params.batch_rounds = 1;
 params.dr_obs = 0.0;
-params.dr_node = 0.5;
 params.do_validate = 1;
 params.X_v = X_te;
 params.Y_v = Y_te;
