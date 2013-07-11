@@ -1,7 +1,7 @@
 % Generate some simple data with which to test the SimpleNet class
 obs_dim = 5;
-obs_count = 2500;
-train_count = 500;
+obs_count = 2000;
+train_count = 1000;
 obs_noise = 0.0;
 label_noise = 0.0;
 
@@ -52,17 +52,19 @@ loss_func = LossFunc(3);
 % Create the network object
 net = BlockNet(act_func, out_func, loss_func);
 % Setup blocky parameters
-layer_bsizes = [1 5 5 5 1];
-layer_bcounts = [obs_dim 15 15 15 2];
+layer_bsizes = [1 5 5 1];
+layer_bcounts = [obs_dim 10 10 2];
+% Initialize network blocks
+net.init_blocks(layer_bsizes, layer_bcounts, 0.1);
 
 % Set up parameter struct for updates
 params = struct();
 params.epochs = 10000;
 params.start_rate = 1.0;
-params.decay_rate = 0.2^(1 / params.epochs);
+params.decay_rate = 0.1^(1 / params.epochs);
 params.momentum = 0.5;
 params.weight_bound = 50;
-params.batch_size = 100;
+params.batch_size = 500;
 params.batch_rounds = 1;
 params.dr_obs = 0.0;
 params.do_validate = 1;

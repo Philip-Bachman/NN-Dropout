@@ -154,76 +154,84 @@ classdef BlockNet < handle
                 dr_obs = 0.0;
             end
             obs_count = size(X,1);
-            drop_weights = self.layer_weights;
-            % Effect random observation and node dropping by zeroing afferent
-            % and efferent weights for randomly selected blocks in each layer,
-            % with the "block size" at input layer fixed to 1.
-            if (self.do_drop)
-                for i=1:(self.depth-1),
-                    if (i == 1)
-                        if (dr_obs > 1e-5)
-                            % Do dropout at input layer
-                            post_weights = drop_weights{i};
-                            mask = rand(size(post_weights,1),1) > dr_obs;
-                            mask(end) = 1;
-                            drop_weights{i} = bsxfun(@times,post_weights,mask);
-                        end
-                    else
-                        % Do dropout at hidden node layers
-                        pre_weights = drop_weights{i-1};
-                        post_weights = drop_weights{i};
-                        bcount = self.layer_bcounts(i);
-                        bmembs = self.layer_bmembs{i};
-                        drop_blocks = randsample(bcount, round(bcount/2));
-                        drop_nodes = unique(bmembs(drop_blocks,:));
-                        mask = ones(size(post_weights,1),1);
-                        mask(drop_nodes) = 0;
-                        % mask post_weights
-                        post_weights = bsxfun(@times, post_weights, mask);
-                        drop_weights{i} = post_weights;
-                        % mask pre_weights
-                        mask = mask(1:(end-1))';
-                        drop_weights{i-1} = bsxfun(@times, pre_weights, mask);
-                    end
-                    
-                end
-            end
-            % Compute per-layer activations for the full observation set
-            layer_acts = cell(1,self.depth);
-            layer_acts{1} = X;
-            for i=2:self.depth,
-                if (i == self.depth)
-                    func = self.out_func;
-                else
-                    func = self.act_func;
-                end
-                W = drop_weights{i-1};
-                A = layer_acts{i-1};
-                layer_acts{i} = func.feedforward(BlockNet.bias(A), W);
-            end
-            % Compute gradients at all nodes, starting with loss values and
-            % gradients for each observation at output layer
-            node_grads = cell(1,self.depth);
             weight_grads = cell(1,self.depth-1);
-            [L dL] = self.loss_func.evaluate(layer_acts{self.depth}, Y);
             for i=1:(self.depth-1),
-                l_num = self.depth - i;
-                if (l_num == (self.depth - 1))
-                    func = self.out_func;
-                    post_weights = 1;
-                    post_grads = dL;
-                else
-                    func = self.act_func;
-                    post_weights = drop_weights{l_num+1};
-                    post_weights(end,:) = [];
-                    post_grads = node_grads{l_num+1};
+                weight_grads{i} = zeros(size(self.layer_weights{i}));
+            end
+            sample_count = 1;
+            for s=1:sample_count,
+                drop_weights = self.layer_weights;
+                % Effect random observation and node dropping by zeroing afferent
+                % and efferent weights for randomly selected blocks in each layer,
+                % with the "block size" at input layer fixed to 1.
+                if (self.do_drop)
+                    for i=1:(self.depth-1),
+                        if (i == 1)
+                            if (dr_obs > 1e-5)
+                                % Do dropout at input layer
+                                post_weights = drop_weights{i};
+                                mask = rand(size(post_weights,1),1) > dr_obs;
+                                mask(end) = 1;
+                                drop_weights{i} = bsxfun(@times,post_weights,mask);
+                            end
+                        else
+                            % Do dropout at hidden node layers
+                            pre_weights = drop_weights{i-1};
+                            post_weights = drop_weights{i};
+                            bcount = self.layer_bcounts(i);
+                            bmembs = self.layer_bmembs{i};
+                            %drop_blocks = randsample(bcount, round(bcount/2));
+                            drop_blocks = find(rand(1,bcount) > 0.5);
+                            drop_nodes = unique(bmembs(drop_blocks,:));
+                            mask = ones(size(post_weights,1),1);
+                            mask(drop_nodes) = 0;
+                            % mask post_weights
+                            post_weights = bsxfun(@times, post_weights, mask);
+                            drop_weights{i} = post_weights;
+                            % mask pre_weights
+                            mask = mask(1:(end-1))';
+                            drop_weights{i-1} = bsxfun(@times, pre_weights, mask);
+                        end
+
+                    end
                 end
-                pre_acts = BlockNet.bias(layer_acts{l_num});
-                pre_weights = drop_weights{l_num};
-                cur_grads = func.backprop(...
-                    post_grads, post_weights, pre_acts, pre_weights);
-                weight_grads{l_num} = pre_acts' * (cur_grads ./ obs_count);
-                node_grads{l_num} = cur_grads;
+                % Compute per-layer activations for the full observation set
+                layer_acts = cell(1,self.depth);
+                layer_acts{1} = X;
+                for i=2:self.depth,
+                    if (i == self.depth)
+                        func = self.out_func;
+                    else
+                        func = self.act_func;
+                    end
+                    W = drop_weights{i-1};
+                    A = layer_acts{i-1};
+                    layer_acts{i} = func.feedforward(BlockNet.bias(A), W);
+                end
+                % Compute gradients at all nodes, starting with loss values and
+                % gradients for each observation at output layer
+                node_grads = cell(1,self.depth);
+                [L dL] = self.loss_func.evaluate(layer_acts{self.depth}, Y);
+                for i=1:(self.depth-1),
+                    l_num = self.depth - i;
+                    if (l_num == (self.depth - 1))
+                        func = self.out_func;
+                        post_weights = 1;
+                        post_grads = dL;
+                    else
+                        func = self.act_func;
+                        post_weights = drop_weights{l_num+1};
+                        post_weights(end,:) = [];
+                        post_grads = node_grads{l_num+1};
+                    end
+                    pre_acts = BlockNet.bias(layer_acts{l_num});
+                    pre_weights = drop_weights{l_num};
+                    cur_grads = func.backprop(...
+                        post_grads, post_weights, pre_acts, pre_weights);
+                    weight_grads{l_num} = weight_grads{l_num} + ...
+                        pre_acts' * (cur_grads ./ (sample_count * obs_count));
+                    node_grads{l_num} = cur_grads;
+                end
             end
             result = struct();
             result.layer_grads = weight_grads;
@@ -313,7 +321,7 @@ classdef BlockNet < handle
                 % Decay the learning rate after performing update
                 rate = rate * params.decay_rate;
                 % Occasionally recompute and display the loss and accuracy
-                if ((e == 1) || (mod(e, 200) == 0))
+                if ((e == 1) || (mod(e, 50) == 0))
                     if (size(X,1) > 5000)
                         idx = randsample(size(X,1),5000);
                     else
