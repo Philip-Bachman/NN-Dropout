@@ -1,3 +1,6 @@
 *.mat
 *.m~
 *.fig
+*.swp
+
+.SmoothNet.m.swp
