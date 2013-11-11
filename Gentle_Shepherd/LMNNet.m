@@ -308,8 +308,8 @@ classdef LMNNet < handle
             dNf = cell(1,self.depth);
             for i=1:self.depth,
                 ll = self.layer_lams(i);
-                if ((ll.lam_lmnn > 1e-10) && (i > 1))
-                    [Ll dAc dAn dAf] = LMNNet.lmnn_grads_euc(...
+                if (ll.lam_lmnn > 1e-10)
+                    [Ll dAc dAn dAf] = LMNNet.lmnn_grads_tish(...
                         Ac{i}, An{i}, Af{i}, 1.0);
                     smpl_wts = ll.lam_lmnn * smpl_wts;
                     dNc{i} = bsxfun(@times, dAc, smpl_wts);
@@ -329,7 +329,7 @@ classdef LMNNet < handle
             % gradients for each observation at output layer. Do this for
             % each point underlying the fd-estimated gradient functionals.
             %
-            % Return relavant for left and right points independently.
+            % Return gradients for left and right points independently.
             %
             dNl = cell(1,self.depth);
             dNr = cell(1,self.depth);
@@ -358,7 +358,7 @@ classdef LMNNet < handle
             dNr = cell(1,self.depth);
             for i=1:self.depth,
                 ll = self.layer_lams(i);
-                if ((ll.lam_hess > 1e-10) && (i > 1))
+                if (ll.lam_hess > 1e-10)
                     [L dLl dLc dLr] = LMNNet.loss_hess(Al{1}, Ac{1}, Ar{1},...
                             Al{i}, Ac{i}, Ar{i});
                     % Reweight grads, e.g. for (possibly) importance sampling
@@ -409,7 +409,7 @@ classdef LMNNet < handle
             for i=2:self.depth,
                 ll = self.layer_lams(i);
                 if (ll.lam_lmnn > 1e-10)
-                    Ll = LMNNet.lmnn_grads_euc(Ac{i}, An{i}, Af{i}, 1.0);
+                    Ll = LMNNet.lmnn_grads_tish(Ac{i}, An{i}, Af{i}, 1.0);
                     Ll = bsxfun(@times, Ll, smpl_wts);
                     L = L + ll.lam_lmnn * sum(Ll(:));
                 end
@@ -482,9 +482,9 @@ classdef LMNNet < handle
                 LMNNet.sample_points(X, Y, 2000, grad_len);
             if (self.out_type == 0)
                 Yc = Xc;
-            else
-                Yc = Y(nc_batch(:,1),:);
             end
+            %    Yc = Y(nc_batch(:,1),:);
+            %end
             % Compute activations for left/center/right points
             acts_l = self.feedforward(Xl, l_weights);
             acts_c = self.feedforward(Xc, l_weights);
@@ -563,9 +563,15 @@ classdef LMNNet < handle
                 if (e >= params.lmnn_start)
                     if ((e == params.lmnn_start) || (mod(e, 1000) == 0))
                         % Compute neighbor constraints from current embedding
-                        idx = randsample(1:size(X,1),params.lmnn_count);
-                        X_nc = X(idx,:);
-                        Y_nc = Y(idx,:);
+                        if (params.lmnn_count < size(X,1))
+                            idx = randsample(1:size(X,1),params.lmnn_count);
+                            X_nc = X(idx,:);
+                            Y_nc = Y(idx,:);
+                        else
+                            idx = 1:size(X,1);
+                            X_nc = X;
+                            Y_nc = Y;
+                        end
                         A = self.feedforward(X_nc, self.layer_weights);
                         nc_lmnn = LMNNet.neighbor_constraints(...
                             A{self.const_layer}, Y_nc, 10, 20, 0);
@@ -662,7 +668,7 @@ classdef LMNNet < handle
                 for k=1:(self.depth),
                     ll = self.layer_lams(k);
                     if ((ll.lam_lmnn > 1e-10) && (k > 1))
-                        Lk = LMNNet.lmnn_grads_euc(Ac{k},Al{k},Ar{k},1.0);
+                        Lk = LMNNet.lmnn_grads_tish(Ac{k},Al{k},Ar{k},1.0);
                         Ls = Ls + mean(Lk);
                     end
                     
@@ -934,6 +940,44 @@ classdef LMNNet < handle
             knn_err = mean(bsxfun(@eq, Y_nn ,Y));
             fprintf('    knn error: %.4f, %.4f, %.4f, %.4f, %.4f\n', ...
                 knn_err(1), knn_err(2), knn_err(3), knn_err(4), knn_err(5));
+            return
+        end
+        
+        function [ L dXc dXn dXf ] = lmnn_grads_tish( Xc, Xn, Xf, margin )
+            % Compute gradients of standard LMNN using T-ish distance.
+            %
+            % In addition to the standard penalty on margin transgression by
+            % impostor neighbors, impose an attractive penalty on distance between
+            % true neighbors and a repulsive penalty between false neighbors.
+            %
+            % Parameters:
+            %   Xc: central/source points
+            %   Xn: points that should be closer to those in Xc
+            %   Xf: points that should be further from those in Xc
+            %   margin: desired margin between near/far distances w.r.t. Xc
+            % Outputs:
+            %   L: loss for each LMNN triplet (Xc(i,:),Xn(i,:),Xf(i,:))
+            %   dXc: gradient of L w.r.t. Xc
+            %   dXn: gradient of L w.r.t. Xn
+            %   dXf: gradient of L w.r.t. Xf
+            %
+            d = 0.5;
+            On = Xn - Xc;
+            Of = Xf - Xc;
+            % Compute (squared) norms of the offsets On/Of
+            Dn = sqrt(sum(On.^2,2) + d);
+            Df = sqrt(sum(Of.^2,2) + d);
+            % Get losses and indicators for violated LMNN constraints
+            m_viol = max(0, (Dn - Df) + margin);
+            L = m_viol;
+            % Compute gradients for violated constraints
+            dXn = bsxfun(@times, bsxfun(@rdivide,On,Dn), (m_viol > 1e-10));
+            dXf = bsxfun(@times, bsxfun(@rdivide,-Of,Df), (m_viol > 1e-10));
+            dXc = -dXn - dXf;
+            % Clip gradients
+            dXc = max(-2,min(dXc, 2));
+            dXn = max(-2,min(dXn, 2));
+            dXf = max(-2,min(dXf, 2));
             return
         end
 

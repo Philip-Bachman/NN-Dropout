@@ -32,7 +32,7 @@ classdef ActFunc < handle
                 case 5
                     acts = ActFunc.relu_ff(pre_values, pre_weights);
                 case 6
-                    acts = ActFunc.softmax_ff(pre_values, pre_weights);
+                    acts = ActFunc.rehu_ff(pre_values, pre_weights);
                 otherwise
                     error('No valid activation function type selected.');
             end
@@ -76,7 +76,7 @@ classdef ActFunc < handle
                     node_grads = ActFunc.relu_bp(post_grads, post_weights,...
                         pre_values, pre_weights, act_grads);
                 case 6
-                    node_grads = ActFunc.softmax_bp(post_grads, post_weights,...
+                    node_grads = ActFunc.rehu_bp(post_grads, post_weights,...
                         pre_values, pre_weights, act_grads);
                 otherwise
                     error('No valid activation function type selected.');
@@ -137,7 +137,7 @@ classdef ActFunc < handle
             % Outputs:
             %   cur_acts: activations at current layer (obs_count x cur_dim)
             %
-            cur_acts = 1 ./ (1 + exp(-(pre_acts * pre_weights)));
+            cur_acts = (1 ./ (1 + exp(-(pre_acts * pre_weights))));
             return
         end
         
@@ -287,9 +287,8 @@ classdef ActFunc < handle
             return
         end
         
-        function [ cur_acts ] = softmax_ff(pre_acts, pre_weights)
-            % Compute simple softmax activation function where each row in the
-            % matrix (pre_acts * pre_weights) is "softmaxed".
+        function [ cur_acts ] = rehu_ff(pre_acts, pre_weights)
+            % Compute simple rectified Huber activation function.
             %
             % Parameters:
             %   pre_acts: previous layer activations (obs_count x pre_dim)
@@ -297,12 +296,16 @@ classdef ActFunc < handle
             % Outputs:
             %   cur_acts: activations at current layer (obs_count x cur_dim)
             %
-            exp_vals = exp(pre_acts * pre_weights);
-            cur_acts = bsxfun(@rdivide, exp_vals, sum(exp_vals,2));
+            cur_acts = pre_acts * pre_weights;
+            cur_acts = bsxfun(@max, cur_acts, 0);
+            quad_mask = bsxfun(@lt, cur_acts, 0.5);
+            line_mask = bsxfun(@ge, cur_acts, 0.5);
+            cur_acts = (quad_mask .* cur_acts.^2) + ...
+                (line_mask .* (cur_acts - 0.25));
             return
         end
         
-        function [ dLdF ] = softmax_bp(post_grads, post_weights, ...
+        function [ dLdF ] = rehu_bp(post_grads, post_weights, ...
                 pre_acts, pre_weights, act_grads)
             % Compute the gradients w.r.t. the pre-transform activations at all
             % nodes in the current layer.
@@ -322,13 +325,16 @@ classdef ActFunc < handle
             %   dLdF: gradients w.r.t pre-transform node activations at current
             %         layer (obs_count x cur_dim)
             %
-            exp_vals = exp(pre_acts * pre_weights);
-            sm_vals = bsxfun(@rdivide, exp_vals, sum(exp_vals,2));
-            dAdF = sm_vals .* (1 - sm_vals);
+            dAdF = max(0, (pre_acts * pre_weights));
+            dAdF = 2 * dAdF;
+            dAdF(dAdF > 1) = 1;
             dLdA = (post_grads * post_weights') + act_grads;
             dLdF = dLdA .* dAdF;
             return
         end
+        
+        
+
         
     end
     
