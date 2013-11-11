@@ -7,7 +7,7 @@ Yte_i = class_inds(Yte);
 
 % Create the SmoothNet instance
 layer_dims = [size(Xtr,2) 250 250 250 size(Ytr_i,2)];
-NET = SmoothNet(Xtr, Ytr_i, layer_dims, ActFunc(6), ActFunc(1));
+NET = SmoothNet(layer_dims, ActFunc(6), ActFunc(1));
 NET.out_loss = @(yh, y) SmoothNet.loss_mcl2h(yh, y);
 NET.init_weights(0.1);
 

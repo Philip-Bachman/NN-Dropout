@@ -44,7 +44,7 @@ classdef SmoothNet < handle
     end
     
     methods
-        function [self] = SmoothNet(X, Y, layer_dims, act_func, out_func)
+        function [self] = SmoothNet(layer_dims, act_func, out_func)
             % Constructor for SmoothNet class
             if ~exist('out_func','var')
                 % Default to using linear activation transform at output layer
@@ -460,7 +460,7 @@ classdef SmoothNet < handle
             Fg = self.evaluate(Xg);
             out_dim = size(Fg,2);
             in_dim = size(Xg,2);
-            if (out_dim == in_dim)
+            if (max(Y(:)) ~= 1)
                 % Compute encoding error (using least squares)
                 L_out = SmoothNet.loss_lsq(Fg,Xg);
                 L_out = mean(L_out(:));
@@ -482,6 +482,7 @@ classdef SmoothNet < handle
             params = SmoothNet.process_params(params);
             % Compute a length scale for gradient regularization.
             nn_len = SmoothNet.compute_nn_len(X, 500);
+            nn_len = max(nn_len,0.1);
             % Setup parameters for gradient updates (rates and momentums)
             all_mom = cell(1,self.depth-1);
             for i=1:(self.depth-1),
@@ -494,7 +495,6 @@ classdef SmoothNet < handle
             max_sratio = zeros(self.depth-1,params.rounds);
             max_ratios = zeros(1,params.rounds);
             % Run update loop
-            figure();
             fprintf('Updating weights (%d rounds):\n', params.rounds);
             for e=1:params.rounds,
                 % Get the droppy/fuzzy weights to use with this round
@@ -567,11 +567,6 @@ classdef SmoothNet < handle
                     end
                 end
                 max_ratios(e) = max(max_sratio(:,e));
-                if (e > 50)
-                    cla();
-                    plot(50:e,max_ratios(50:e),'b-');
-                    drawnow();
-                end
                 % Apply updates to inter-layer weights
                 for l=1:(self.depth-1),
                     dW = layer_dW{l};
@@ -784,7 +779,7 @@ classdef SmoothNet < handle
             % for FDs of higher-order curvature, due to tiny denominators.
             %
             if ~exist('hub_thresh','var')
-                hub_thresh = 1.0;
+                hub_thresh = 2.0;
             end 
             L_fd = cell(1,numel(ord_lams));
             dL_fd = cell(1,length(A_out));
