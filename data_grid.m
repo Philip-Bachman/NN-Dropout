@@ -52,6 +52,9 @@ theta = rand() * 2 * pi;
 rot_mat = [cos(theta) -sin(theta); sin(theta) cos(theta)];
 X = X * rot_mat;
 
+X = bsxfun(@minus, X, mean(X));
+X = bsxfun(@rdivide, X, std(X));
+
 return
 
 end

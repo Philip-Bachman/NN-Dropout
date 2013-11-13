@@ -1,8 +1,17 @@
 clear;
 
 % Generate data to test basic network training
-[X Y] = data_grid(5000, 0.25, 0.3, 4, 4);
-[Xtr Ytr Xte Yte] = trte_split(X, Y, 250/5000);
+noise_dims = 8;
+label_noise = 0.05;
+[X Y] = data_grid(5000, 0.3, 0.3, 3, 3);
+X = [X randn(size(X,1),noise_dims)];
+[Xtr Ytr Xte Yte] = trte_split(X, Y, 150/5000);
+class_labels = unique(Yte);
+for i=1:size(Ytr,1),
+    if (rand() < label_noise)
+        Ytr(i) = randsample(class_labels,1);
+    end
+end
 % Note: SmoothNet expects class labels to be in +1/-1 indicator matrix form.
 %       class_cats() and class_inds() convert indicator and categorical labels.
 Ytr = class_inds(Ytr);
@@ -28,10 +37,10 @@ Yte = class_inds(Yte);
 % NET.init_weights(s): Init weights using zero-mean Gaussian with stdev s. For
 %                      details on weight initialization, see SmoothNet.m
 %
-layer_dims = [size(Xtr,2) 150 150 size(Ytr,2)];
+layer_dims = [size(Xtr,2) 100 100 100 size(Ytr,2)];
 NET = SmoothNet(layer_dims, ActFunc(6), ActFunc(1));
 NET.out_loss = @(yh, y) SmoothNet.loss_mcl2h(yh, y);
-NET.init_weights(0.1);
+NET.init_weights(0.15);
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Set whole-network regularization parameters %
@@ -88,7 +97,7 @@ for i=1:numel(layer_dims),
     NET.layer_lams(i).lam_l2 = 0;
     NET.layer_lams(i).wt_bnd = 5.0;
 end
-NET.layer_lams(numel(layer_dims)).ord_lams = [0.01 0.001 0.0001];
+NET.layer_lams(numel(layer_dims)).ord_lams = [0.01 0.02 0.04 0.08];
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Setup param struct for training the net %
@@ -105,9 +114,9 @@ NET.layer_lams(numel(layer_dims)).ord_lams = [0.01 0.001 0.0001];
 % Yv: target outputs for validation
 %
 params = struct();
-params.rounds = 5000;
-params.start_rate = 0.1;
-params.decay_rate = 0.1^(1 / params.rounds);
+params.rounds = 7500;
+params.start_rate = 0.02;
+params.decay_rate = 0.2^(1 / params.rounds);
 params.momentum = 0.95;
 params.batch_size = 100;
 params.lam_l2 = 1e-5;

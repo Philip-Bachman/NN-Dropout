@@ -1,5 +1,5 @@
-classdef SmoothNet < handle
-    % This class performs training of a smoothed multi-layer neural-net.
+classdef BlockNet < handle
+    % This class manages a multi-layer neural-net with block dropout.
     %
     
     properties
@@ -14,6 +14,12 @@ classdef SmoothNet < handle
         % layer_sizes gives the number of nodes in each layer of this net
         %   note: these sizes do _not_ include the bias
         layer_sizes
+        % layer_bsizes gives the block size for each hidden layer
+        layer_bsizes
+        % layer_bcounts gives the number of blocks in each hidden layer
+        layer_bcounts
+        % layer_bmembs tells the members of each block in each hidden layer
+        layer_bmembs
         % layer_weights is a cell array such that layer_weights{l} contains a
         % matrix in which entry (i,j) contains the weights between node i in
         % layer l and node j in layer l+1. The number of weight matrices in
@@ -38,8 +44,8 @@ classdef SmoothNet < handle
     end
     
     methods
-        function [self] = SmoothNet(layer_dims, act_func, out_func)
-            % Constructor for SmoothNet class
+        function [self] = BlockNet(layer_dims, act_func, out_func)
+            % Constructor for BlockNet class
             if ~exist('out_func','var')
                 % Default to using linear activation transform at output layer
                 out_func = ActFunc(1);
@@ -49,23 +55,83 @@ classdef SmoothNet < handle
             self.depth = numel(layer_dims);
             self.layer_sizes = reshape(layer_dims,1,numel(layer_dims));
             % Set loss at output layer (HSQ is a good general choice)
-            self.out_loss = @(yh, y) SmoothNet.loss_mcl2h(yh, y);
+            self.out_loss = @(yh, y) BlockNet.loss_mcl2h(yh, y);
             % Initialize inter-layer weights
             self.layer_weights = [];
+            self.layer_bsizes = [];
+            self.layer_bcounts = [];
+            self.layer_bmembs = [];
             % Set blocks to contain individual nodes for now.
-            self.init_weights(0.1);
+            b_sizes = ones(size(self.layer_sizes));
+            b_counts = self.layer_sizes;
+            self.init_blocks(b_sizes, b_counts, 0.1);
             % Initialize per-layer activation regularization weights
             self.layer_lams = struct();
             for i=1:self.depth,
                 self.layer_lams(i).lam_l1 = 0.0;
                 self.layer_lams(i).lam_l2 = 0.0;
                 self.layer_lams(i).ord_lams = [0];
-                self.layer_lams(i).wt_bnd = 5;
+                self.layer_lams(i).wt_bnd = 10;
             end
             % Set general global regularization weights
             self.weight_noise = 0.0;
             self.drop_rate = 0.0;
             self.drop_input = 0.0;
+            return
+        end
+        
+        function [ result ] = init_blocks(self, bsizes, bcounts, weight_scale)
+            % Do a full init of the network, including block parameters and
+            % edge weights.
+            %
+            self.set_blocks(bsizes, bcounts);
+            self.init_weights(weight_scale);
+            result = 1;
+            return
+        end
+        
+        function [ result ] = set_blocks(self, bsizes, bcounts)
+            % Set the block sizes and counts for each layer in this net.
+            % Currently, sizes other than 1 are not accepted for input layer.
+            %
+            self.depth = numel(bsizes);
+            self.layer_sizes = zeros(1,self.depth);
+            self.layer_bsizes = zeros(1,self.depth);
+            self.layer_bcounts = zeros(1,self.depth);
+            self.layer_bmembs = cell(1,self.depth);
+            for i=1:self.depth,
+                self.layer_bsizes(i) = bsizes(i);
+                self.layer_bcounts(i) = bcounts(i);
+                self.layer_sizes(i) = bsizes(i) * bcounts(i);
+                % Compute sets of member indices for the blocks in this layer
+                bmembs = zeros(bcounts(i), bsizes(i));
+                for b=1:bcounts(i),
+                    b_start = ((b - 1) * bsizes(i)) + 1;
+                    b_end = b_start + (bsizes(i) - 1);
+                    bmembs(b,:) = b_start:b_end;
+                end
+                self.layer_bmembs{i} = bmembs;
+            end
+            % Check to make sure the layer sizes implied by bsizes and bcounts
+            % are concordant with previous layer sizes if they exist). If they
+            % don't exist, then initialize the layer weights.
+            if isempty(self.layer_weights)
+                self.init_weights();
+            else
+                if (length(self.layer_weights) ~= (self.depth-1))
+                    warning('set_blocks: contradiction with previous depth.');
+                    self.init_weights();
+                end
+                for i=1:(self.depth-1),
+                    lw = self.layer_weights{i};
+                    if (((size(lw,1) - 1) ~=  self.layer_sizes(i)) || ...
+                            (size(lw,2) ~= self.layer_sizes(i+1)))
+                        warning('set_blocks: contradiction with layer sizes.');
+                        self.init_weights();
+                    end
+                end
+            end
+            result = 1;
             return
         end
         
@@ -165,23 +231,12 @@ classdef SmoothNet < handle
             end
         end
         
-        function [ l_acts d_masks ] = feedforward(self, X, l_weights, m_drop)
+        function [ l_acts ] = feedforward(self, X, l_weights)
             % Get per-layer activations for the observations in X, given the
-            % weights in l_weights. If m_drop is 1, do mask-based dropping of
-            % activations at each layer, and return the sampled masks.
+            % weights in l_weights.
             %
-            if ~exist('m_drop','var')
-                m_drop = 0;
-            end
             l_acts = cell(1,self.depth);
-            d_masks = cell(1,self.depth);
             l_acts{1} = X;
-            d_masks{1} = ones(size(X));
-            if ((m_drop == 1) && (self.drop_input > 1e-8))
-                mask = rand(size(l_acts{1})) > self.drop_input;
-                d_masks{1} = mask;
-                l_acts{1} = l_acts{1} .* mask;
-            end
             for i=2:self.depth,
                 if (i == self.depth)
                     func = self.out_func;
@@ -190,19 +245,13 @@ classdef SmoothNet < handle
                 end
                 W = l_weights{i-1};
                 A_pre = l_acts{i-1};
-                A_cur = func.feedforward(SmoothNet.bias(A_pre), W);
+                A_cur = func.feedforward(BlockNet.bias(A_pre), W);
                 l_acts{i} = A_cur;
-                d_masks{i} = ones(size(A_cur));
-                if ((m_drop == 1)&&(i < self.depth)&&(self.drop_rate > 1e-8))
-                    mask = rand(size(l_acts{i})) > self.drop_rate;
-                    d_masks{i} = mask;
-                    l_acts{i} = l_acts{i} .* mask;
-                end
             end
             return
         end
         
-        function [ dW dN ] = backprop(self, l_acts, l_weights, l_grads, l_masks)
+        function [ dW dN ] = backprop(self, l_acts, l_weights, l_grads)
             % Get per-layer weight gradients, based on the given per-layer
             % activations, per-layer weights, and loss gradients at the output
             % layer (i.e., perform backprop). SUPER IMPORTANT FUNCTION!!
@@ -213,19 +262,12 @@ classdef SmoothNet < handle
             %   l_grads: per layer gradients on post-transform activations
             %            note: for backpropping basic loss on net output, only
             %                  l_grads{self.depth} will be non-zero.
-            %   l_masks: masks for dropout on per-layer, per-node activations
             %
             % Outputs:
             %   dW: grad on each inter-layer weight (size of l_weights)
             %   dN: grad on each pre-transform activation (size of l_grads)
             %       note: dN{1} will be grads on inputs to network
             %
-            if ~exist('l_masks','var')
-                l_masks = cell(1,self.depth);
-                for i=1:self.depth,
-                    l_masks{i} = ones(size(l_acts{i}));
-                end
-            end
             dW = cell(1,self.depth-1);
             dN = cell(1,self.depth);
             for i=0:(self.depth-1),
@@ -236,7 +278,7 @@ classdef SmoothNet < handle
                     act_grads = l_grads{l_num};
                     nxt_weights = zeros(size(act_grads,2),1);
                     nxt_grads = zeros(size(act_grads,1),1);
-                    prv_acts = SmoothNet.bias(l_acts{l_num-1});
+                    prv_acts = BlockNet.bias(l_acts{l_num-1});
                     prv_weights = l_weights{l_num-1};
                 end
                 if ((l_num < self.depth) && (l_num > 1))
@@ -246,7 +288,7 @@ classdef SmoothNet < handle
                     nxt_weights = l_weights{l_num};
                     nxt_weights(end,:) = [];
                     nxt_grads = dN{l_num+1};
-                    prv_acts = SmoothNet.bias(l_acts{l_num-1});
+                    prv_acts = BlockNet.bias(l_acts{l_num-1});
                     prv_weights = l_weights{l_num-1};
                 end
                 if (l_num == 1)
@@ -263,7 +305,6 @@ classdef SmoothNet < handle
                 % current layer.
                 cur_grads = func.backprop(nxt_grads, nxt_weights, ...
                     prv_acts, prv_weights, act_grads);
-                cur_grads = cur_grads .* l_masks{l_num};
                 dN{l_num} = cur_grads;
                 if (l_num > 1)
                     % Compute gradients w.r.t. inter-layer connection weights
@@ -301,7 +342,7 @@ classdef SmoothNet < handle
                     W = W .* 0.5;
                 end
                 % Compute activations at the current layer via feedforward
-                out_acts = func.feedforward(SmoothNet.bias(out_acts), W);
+                out_acts = func.feedforward(BlockNet.bias(out_acts), W);
             end
             return
         end
@@ -373,7 +414,7 @@ classdef SmoothNet < handle
                         A_out{j} = A_fd{j}{i};
                     end
                     [L_fdi dN_fdi] = ...
-                        SmoothNet.loss_fd_huber(A_out,fd_lens,olams,smpl_wts);
+                        BlockNet.loss_fd_huber(A_out,fd_lens,olams,smpl_wts);
                     for j=1:length(A_fd),
                         dN_fd{j}{i} = dN_fdi{j};
                     end
@@ -386,10 +427,10 @@ classdef SmoothNet < handle
         end
         
         function [L_gnrl L_curv L_out] = check_losses(self, X, Y, nn_len)
-            % Check the various losses being optimized for this SmoothNet
+            % Check the various losses being optimized for this BlockNet
             l_weights = self.layer_weights;
             % Sample points for general loss
-            [Xg Yg smpl_wts] = SmoothNet.sample_points(X, Y, 2000);
+            [Xg Yg smpl_wts] = BlockNet.sample_points(X, Y, 2000);
             % Compute activations for sampled points
             acts_g = self.feedforward(Xg, l_weights);
             % Compute general loss for sampled points
@@ -397,7 +438,7 @@ classdef SmoothNet < handle
             L_gnrl = sum(L_gnrl(:)) / numel(L_gnrl);
             if (self.max_olam() > 1e-10)
                 % Sample fd chains for cuvrvature loss
-                [X_fd fd_lens] = SmoothNet.sample_fd_chains(X,...
+                [X_fd fd_lens] = BlockNet.sample_fd_chains(X,...
                     2000, self.max_order(), nn_len, (nn_len/4));
                 % Compute activations for points in each FD chain
                 acts_fd = cell(1,length(X_fd));
@@ -421,7 +462,7 @@ classdef SmoothNet < handle
             in_dim = size(Xg,2);
             if (max(Y(:)) ~= 1)
                 % Compute encoding error (using least squares)
-                L_out = SmoothNet.loss_lsq(Fg,Xg);
+                L_out = BlockNet.loss_lsq(Fg,Xg);
                 L_out = mean(L_out(:));
             else
                 % Compute misclassification rate
@@ -434,14 +475,14 @@ classdef SmoothNet < handle
             
         
         function [ result ] =  train(self, X, Y, params)
-            % Do fully parameterized training for a SmoothNet
+            % Do fully parameterized training for a BlockNet
             if ~exist('params','var')
                 params = struct();
             end
-            params = SmoothNet.process_params(params);
+            params = BlockNet.process_params(params);
             % Compute a length scale for gradient regularization.
-            nn_len = SmoothNet.compute_nn_len(X, 500);
-            nn_len = max(nn_len,0.2);
+            nn_len = BlockNet.compute_nn_len(X, 500);
+            nn_len = max(nn_len,0.1);
             % Setup parameters for gradient updates (rates and momentums)
             all_mom = cell(1,self.depth-1);
             for i=1:(self.depth-1),
@@ -457,26 +498,25 @@ classdef SmoothNet < handle
             fprintf('Updating weights (%d rounds):\n', params.rounds);
             for e=1:params.rounds,
                 % Get the droppy/fuzzy weights to use with this round
-                %l_weights = self.get_drop_weights(1);
-                l_weights = self.layer_weights;
+                l_weights = self.get_drop_weights(1);
                 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
                 % Sample points and do feedforward/backprop for general loss %
                 % on output layer and internal layers.                       %
                 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-                [Xg Yg smpl_wts] = SmoothNet.sample_points(X, Y, batch_size);
+                [Xg Yg smpl_wts] = BlockNet.sample_points(X, Y, batch_size);
                 % Compute activations for center points
-                [acts_g mask_g] = self.feedforward(Xg, l_weights, 1);
+                acts_g = self.feedforward(Xg, l_weights);
                 % Get general per-node loss and grads for the "true" points
                 dNc_gnrl = self.bprop_gnrl(acts_g, Yg, smpl_wts);
                 % Backprop per-node gradients for general loss
-                dLdW = self.backprop(acts_g, l_weights, dNc_gnrl, mask_g);
+                dLdW = self.backprop(acts_g, l_weights, dNc_gnrl);
                 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
                 % Sample FD chains and do feedforward/backprop for curvature  %
                 % regularization across multiple orders of curvature.         %
                 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
                 if (self.max_olam() > 1e-10)
                     l_weights = self.layer_weights;
-                    [X_fd fd_lens] = SmoothNet.sample_fd_chains(X,...
+                    [X_fd fd_lens] = BlockNet.sample_fd_chains(X,...
                         batch_size, self.max_order(), nn_len, (nn_len/4));
                     smpl_wts = ones(batch_size,1);
                     % Compute activations for points in each FD chain
@@ -516,13 +556,12 @@ classdef SmoothNet < handle
                     l_dLdW = (params.momentum * all_mom{l}) + ...
                         ((1 - params.momentum) * l_dLdW);
                     all_mom{l} = l_dLdW;
-                    % Record gradients for weights at this layer
-                    layer_dW{l} = l_dLdW;
-                    % Compute some norms, for diagnostics
+                    % Compute norm of weights and gradient, for diagnostics
                     lwts_norms(l,e) = sqrt(sum(sum(l_weights.^2)));
                     dldw_norms(l,e) = sqrt(sum(sum(l_dLdW.^2)));
                     max_sratio(l,e) = max(...
-                        sqrt(sum(l_dLdW.^2,1))./sqrt(sum(l_weights.^2,1))+1e-3);
+                        sqrt(sum(l_dLdW.^2,1)) ./ sqrt(sum(l_weights.^2,1))+1e-3);
+                    layer_dW{l} = l_dLdW;
                     if ((sum(isnan(l_dLdW(:)))>0) || (sum(isinf(l_dLdW(:)))>0))
                         error('BROKEN GRADIENTS');
                     end
@@ -734,7 +773,7 @@ classdef SmoothNet < handle
             % given the fd chain points in A_in, and their associated output
             % values in A_out. 
             %
-            % General idea is same as for SmoothNet.loss_fd, except a Huberized
+            % General idea is same as for BlockNet.loss_fd, except a Huberized
             % loss is applied to finite differences, rather than a pure squared
             % loss. This helps mitigate the strong "outlier" effect that occurs
             % for FDs of higher-order curvature, due to tiny denominators.
