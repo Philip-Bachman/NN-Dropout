@@ -384,15 +384,18 @@ classdef ActFunc < handle
             F = bsxfun(@max, F, 0);
             quad_mask = bsxfun(@lt, F, 0.5);
             line_mask = bsxfun(@ge, F, 0.5);
-            A1 = (quad_mask .* F.^2) + ...
+            F1 = (quad_mask .* F.^2) + ...
                 (line_mask .* (F - 0.25));
-            A1_norms = sqrt(sum(A1.^2,2) + EPS);
-            % Compute 
-            dA1dF = 2*(quad_mask .* F) + line_mask;
-            dA2dA1 = ...
-                bsxfun(@rdivide, bsxfun(@minus,A1_norms.^2,A1), A1_norms.^3);
-            dLdA2 = (post_grads * post_weights') + act_grads;
-            dLdF = dLdA2 .* (dA2dA1 .* dA1dF);
+            N = sqrt(sum(F1.^2,2) + EPS);
+            F2 = bsxfun(@rdivide,F1,N);
+            % Compute gradients of activations wrt pre-activation linear form
+            dF1dF = 2*(quad_mask .* F) + line_mask;
+            % Compute gradient coming down onto activations from above
+            dLdF2 = (post_grads * post_weights') + act_grads;
+            % Backpropagate through normalization for unit norm
+            dLdF1 = bsxfun(@rdivide, dLdF2, N) - ...
+                bsxfun(@times, F2, (sum((dLdF2.*F1),2) ./ (N.^2)));
+            dLdF = dLdF1 .* dF1dF;
             return
         end
 

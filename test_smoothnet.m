@@ -37,8 +37,8 @@ Yte = class_inds(Yte);
 % NET.init_weights(s): Init weights using zero-mean Gaussian with stdev s. For
 %                      details on weight initialization, see SmoothNet.m
 %
-layer_dims = [size(Xtr,2) 100 100 100 size(Ytr,2)];
-NET = SmoothNet(layer_dims, ActFunc(6), ActFunc(1));
+layer_dims = [size(Xtr,2) 200 size(Ytr,2)];
+NET = SmoothNet(layer_dims, ActFunc(7), ActFunc(1));
 NET.out_loss = @(yh, y) SmoothNet.loss_mcl2h(yh, y);
 NET.init_weights(0.15);
 
@@ -66,7 +66,7 @@ NET.init_weights(0.15);
 % NET.drop_input: Drop rate parameter for nodes in input layer.
 %
 NET.weight_noise = 0.00;
-NET.drop_rate = 0.10;
+NET.drop_rate = 0.00;
 NET.drop_input = 0.00;
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -95,9 +95,9 @@ NET.drop_input = 0.00;
 for i=1:numel(layer_dims),
     NET.layer_lams(i).lam_l1 = 0;
     NET.layer_lams(i).lam_l2 = 0;
-    NET.layer_lams(i).wt_bnd = 5.0;
+    NET.layer_lams(i).wt_bnd = 10.0;
 end
-NET.layer_lams(numel(layer_dims)).ord_lams = [0.01 0.02 0.04 0.08];
+NET.layer_lams(numel(layer_dims)).ord_lams = [0.1 0.1];
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Setup param struct for training the net %
@@ -133,7 +133,7 @@ NET.train(Xtr,Ytr,params);
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Plot function learned by the network %
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-plot_netfunc(Xte(1:200,:), Yte(1:200,:), NET, 150, 0.25);
+%plot_netfunc(Xte(1:200,:), Yte(1:200,:), NET, 150, 0.25);
 
 
 
