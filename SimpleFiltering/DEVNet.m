@@ -72,13 +72,12 @@ classdef DEVNet < handle
             drop_masks = cell(1,l_count);
             for i=1:l_count,
                 obs_dim = size(self.layer_weights{i},2);
-                % Make a drop mask, with an extra undropped column, for bias
+                % Make a drop mask, including a column for the bias
                 if (i == 1)
                     mask = (rand(obs_count,obs_dim) > drop_input);
                 else
                     mask = (rand(obs_count,obs_dim) > drop_rate);
                 end
-                mask(:,end) = 1;
                 % Record/store the generated mask for future use
                 drop_masks{i} = mask;
             end

@@ -1,11 +1,16 @@
-classdef BilinearLayer < handle
+classdef SyBiLayer < handle
+    % Symmetric bililinear layer, ie feedforward(X1,X2) and feedforward(X2,X1)
+    % are constrained to be the same. This roughly halves the number of weights
+    % (total number of biases stays the same), and may be useful for learning
+    % "non-linear" dot products for embeddings (e.g. for recommender systems).
+    %
 
     properties
         % act_trans gives the transform to apply after computing each of the
         % bilinear functions in this layer. Currently available are linear,
         % rectified linear, rectified huber, sigmoid, and hypertangent.
         % 
-        act_func
+        act_trans
         weights
         % dim_input gives the dimension of the input to this layer. In the
         % bilinear case, dim_input contains two integers, with dim_input(1)
@@ -19,8 +24,9 @@ classdef BilinearLayer < handle
     end % END PROPERTIES
     
     methods
-        function [ self ] = BilinearLayer(in_dims, out_dim, afun)
-            self.act_func = afun;
+        function [ self ] = SyBiLayer(in_dims, out_dim, afun)
+            self.act_trans = afun;
+            assert((in_dims(1)==in_dims(2)),'Unbalanced SyBiLayer input dims.');
             self.dim_input = in_dims;
             self.dim_output = out_dim;
             self.init_weights(0.1);
@@ -37,16 +43,33 @@ classdef BilinearLayer < handle
             return
         end
         
-        function [ Ws ] = init_weights(self, wt_scale)
+        function [ Ws ] = init_weights(self, wt_scale, b_scale)
             % Initialize the weight struct for this layer.
             %
-            self.weights = struct();
+            if ~exist('b_scale','var')
+                b_scale = wt_scale;
+            end
+            Ws = struct();
+            l_dim = self.dim_input(1);
+            r_dim = self.dim_input(2);
             for i=1:self.dim_output,
-                l_dim = self.dim_input(1);
-                r_dim = self.dim_input(2);
-                self.weights(i).W = wt_scale * randn(l_dim,r_dim);
-                self.weights(i).w = wt_scale * randn((l_dim+r_dim),1);
-                self.weights(i).b = wt_scale * randn();
+                Wi = wt_scale * randn(l_dim,r_dim);
+                wi = wt_scale * randn(l_dim,1);
+                Ws(i).W = (Wi + Wi') ./ 2;
+                Ws(i).w = [wi; wi];
+                Ws(i).b = b_scale * randn();
+            end
+            self.weights = Ws;
+            return
+        end
+        
+        function [ Ws ] = set_weights(self, W)
+            % Set weights using the values in struct/vector W.
+            %
+            if isstruct(W)
+                self.weights = W;
+            else
+                self.weights = self.struct_weights(W);
             end
             Ws = self.weights;
             return
@@ -54,8 +77,13 @@ classdef BilinearLayer < handle
         
         function [ Wv ] = vector_weights(self, Ws)
             % Return a vectorized representation of the weight structure Ws,
-            % which is assumed to come from this BilinearLayer instance.
+            % which is assumed to come from this SyBiLayer instance.
             %
+            % If no argumnet is given, return vectorized self.weights.
+            %
+            if ~exist('Ws','var')
+                Ws = self.weights;
+            end
             assert((length(Ws) == self.dim_output), 'Invalid Ws');
             Wv = [];
             for i=1:length(Ws),
@@ -70,6 +98,12 @@ classdef BilinearLayer < handle
             % Return a struct representation of the vectorized weights Wv,
             % which are assumed to follow the form of this BL instance.
             %
+            % If no argument is given, return self.weights.
+            %
+            if ~exist('Wv','var')
+                Ws = self.weights;
+                return
+            end
             assert((numel(Wv) == self.weight_count()),'Invalid Wv');
             o_dim = self.dim_output;
             l_dim = self.dim_input(1);
@@ -93,7 +127,7 @@ classdef BilinearLayer < handle
             return
         end
         
-        function [ A ] = feedforward(self, X1, X2, Wv)
+        function [ A_post A_pre ] = feedforward(self, X1, X2, Wv)
             % Compute feedforward activations for the inputs in X1/X2 where
             % each row of X1 gives a "left" input and the corresponding row of
             % X2 gives it's partner "right" input.
@@ -110,15 +144,15 @@ classdef BilinearLayer < handle
                 'Invalid X1/X2 dim.');
             in_count = size(X1,1);
             o_dim = self.dim_output;
-            A = zeros(in_count, o_dim);
+            A_pre = zeros(in_count, o_dim);
             for i=1:o_dim,
                 Wi = Ws(i).W;
                 wi = Ws(i).w;
                 bi = Ws(i).b;
-                A(:,i) = sum((X1 .* (Wi * X2')'),2) + ([X1 X2] * wi) + bi;
+                A_pre(:,i) = sum((X1 .* (Wi * X2')'),2) + ([X1 X2] * wi) + bi;
             end
-            % Pass bilinear function outputs through self.act_func.
-            A = self.act_func(A, 'ff');
+            % Pass bilinear function outputs through self.act_trans.
+            A_post = self.act_trans(A_pre, 'ff');
             return
         end
         
@@ -140,9 +174,9 @@ classdef BilinearLayer < handle
                 (size(dLdA,1)==size(A,1)) && (size(A,1)==size(X1,1)) && ...
                 (size(X1,1)==size(X2,1)) && (size(X1,2)==l_dim) && ...
                 (size(X2,2)==r_dim)), 'Wrong arg sizes for BL backprop.');
-            % First, backprop dLdA through self.act_func, assuming the
+            % First, backprop dLdA through self.act_trans, assuming the
             % activations in A came from X1/X2 and induced dLdA.
-            dAdF = self.act_func(A,'bp');
+            dAdF = self.act_trans(A,'bp');
             dLdF = dLdA .* dAdF;
             % Backprop onto weights through this layer's bilinear functions
             dLdW = struct();
@@ -153,14 +187,25 @@ classdef BilinearLayer < handle
             end
             for i=1:size(X1,1),
                 dFdWi = X1(i,:)' * X2(i,:);
-                dFdwi = [X1(i,:) X2(i,:)]';
-                dFdbi = 1;
-                for j=1:o_dim,
-                    dLdW(j).W = dLdW(j).W + (dLdF(i,j) * dFdWi);
-                    dLdW(j).w = dLdW(j).w + (dLdF(i,j) * dFdwi);
-                    dLdW(j).b = dLdW(j).b + (dLdF(i,j) * dFdbi);
+                dFdWi = (dFdWi + dFdWi') ./ 2;
+                dFdwi = (X1(i,:) + X2(i,:)) ./ 2;
+                dFdwi = [dFdwi'; dFdwi'];
+                dLdFi = dLdF(i,:);
+                % Do loopy updates of this layer's weight gradients
+                for o=1:o_dim,
+                    dLdW(o).W = dLdW(o).W + (dLdFi(o) * dFdWi);
+                    dLdW(o).w = dLdW(o).w + (dLdFi(o) * dFdwi);
+                    dLdW(o).b = dLdW(o).b + dLdFi(o);
                 end
             end
+%             % Symmetrize gradients in each node.
+%             for i=1:o_dim,
+%                 dWi = dLdW(i).W;
+%                 dLdW(i).W = (dWi + dWi') ./ 2;
+%                 dwi = dLdW(i).w;
+%                 dwi = (dwi(1:l_dim)+dwi((l_dim+1):end)) ./ 2;
+%                 dLdW(i).w = [dwi; dwi];
+%             end
             % Backprop onto inputs through this layer's bilinear functions
             dLdX1 = zeros(size(X1));
             dLdX2 = zeros(size(X2));
@@ -178,8 +223,7 @@ classdef BilinearLayer < handle
         end
         
         function [ result ] = check_grad(self, l_dim, r_dim, o_dim, grad_checks)
-            % Train a multilayer feedforward network combining classification
-            % loss, SPDF loss, and dropout ensemble variance loss.
+            % Check backprop computations for this SyBiLayer.
             %
             mf_opts = struct();
             mf_opts.Display = 'iter';
@@ -224,11 +268,9 @@ classdef BilinearLayer < handle
         function [ L dLdW ] = fake_loss_W(self, W, X1, X2, C)
             % Fake loss wrapper for gradient testing.
             A = self.feedforward(X1, X2, W);
-            %L = sum(sum((A .* (A * C')), 2));
-            %dLdA = A*C' + A*C;
-            L = sum(sum(A.^2)) / size(X1,1);
-            dLdA = (2 * A) ./ size(X1,1);
-            dLdW = self.backprop(dLdA, A, X1, X2);
+            L = sum(sum((A .* (A * C')), 2));
+            dLdA = A*C' + A*C;
+            dLdW = self.backprop(dLdA, A, X1, X2, W);
             return
         end
         
@@ -238,7 +280,7 @@ classdef BilinearLayer < handle
             A = self.feedforward(X1, X2, W);
             L = sum(sum((A .* (A * C')), 2));
             dLdA = A*C' + A*C;
-            [dLdW dLdX1] = self.backprop(dLdA, A, X1, X2);
+            [dLdW dLdX1] = self.backprop(dLdA, A, X1, X2, W);
             dLdX1 = dLdX1(:);
             return
         end
@@ -249,7 +291,7 @@ classdef BilinearLayer < handle
             A = self.feedforward(X1, X2, W);
             L = sum(sum((A .* (A * C')), 2));
             dLdA = A*C' + A*C;
-            [dLdW dLdX1 dLdX2] = self.backprop(dLdA, A, X1, X2);
+            [dLdW dLdX1 dLdX2] = self.backprop(dLdA, A, X1, X2, W);
             dLdX2 = dLdX2(:);
             return
         end
@@ -281,6 +323,25 @@ classdef BilinearLayer < handle
             else
                 % Do backprop
                 F = double(X > 0);
+            end
+            return
+        end
+        
+        function [ F ] = rehu_trans(X, comp_type)
+            % Leave the values in X unchanged. Or, backprop through the
+            % non-transform.
+            assert((strcmp(comp_type,'ff')||strcmp(comp_type,'bp')),'ff/bp?');
+            if (strcmp(comp_type,'ff'))
+                % Do feedforward
+                F = max(X, 0);
+                mask = F > 0.5;
+                F(~mask) = F(~mask).^2;
+                F(mask) = F(mask) - 0.25;
+            else
+                % Do backprop
+                mask = (X < 0.25) & (X > 1e-10);
+                F = double(X > 0);
+                F(mask) = 2*sqrt(X(mask));
             end
             return
         end

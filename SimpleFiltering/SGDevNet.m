@@ -37,13 +37,11 @@ classdef SGDevNet < handle
         lam_l2
         % lam_l1 controls network-wide (soft) L1 weight regularization
         lam_l1
+        % sparsity penalty on activations
+        lam_l1a
         % do_dev tells whether to train with "Dropout Ensemble Variance"
         % regularization or whether to apply standard dropout
         do_dev
-        % do_cde tells whether to train the network using standard dropout
-        % ensemble approach (i.e. train network to minimize expected loss at
-        % output layer with respect to the dropout ensemble.
-        do_sde
         % drop_hidden gives the drop out rate for hidden layers
         drop_hidden
         % drop_input gives the drop out rate at the input layer
@@ -68,18 +66,18 @@ classdef SGDevNet < handle
             % Initialize per-layer activation regularization weights
             self.layer_lams = struct();
             for i=1:self.depth,
-                self.layer_lams(i).l2_bnd = 10;
-                self.layer_lams(i).lam_dev = 0.0;
+                self.layer_lams(i).l2_bnd = 5;
+                self.layer_lams(i).lam_dev = 5.0;
                 self.layer_lams(i).dev_type = 1;
             end
             % Set network-wide weight regularization parameters
             self.lam_l2 = 0;
             self.lam_l1 = 0;
+            self.lam_l1a = 0;
             % Set parameters for dropout regularization
-            self.drop_hidden = 0.0;
+            self.drop_hidden = 0.5;
             self.drop_input = 0.0;
             self.do_dev = 0;
-            self.do_sde = 1;
             return
         end
         
@@ -95,8 +93,8 @@ classdef SGDevNet < handle
                 pre_dim = self.layer_sizes(i)+1;
                 post_dim = self.layer_sizes(i+1);
                 weights = randn(pre_dim,post_dim);
-                % Default to a smallish positive weight on bias.
-                weights(end,:) = 0.1 + (0.1 * weights(end,:));
+                % Default to a smallish weight on bias.
+                weights(end,:) = 0.1 * weights(end,:);
                 if ((i > 1) && (i < (self.depth - 1)))
                    for j=1:size(weights,2),
                        keep_count = min(50, pre_dim-1);
@@ -134,11 +132,16 @@ classdef SGDevNet < handle
             l_acts = cell(1,self.depth);
             d_masks = cell(1,self.depth);
             l_acts{1} = X;
-            d_masks{1} = ones(size(X));
-            if ((do_drop == 1) && (self.drop_input > 1e-8))
-                mask = rand(size(l_acts{1})) > self.drop_input;
+            d_masks{1} = ones(size(SGDevNet.bias(X)));
+            if (self.drop_input > 1e-8)
+                dr = self.drop_input;
+                mask = rand(size(SGDevNet.bias(X))) > dr;
                 d_masks{1} = mask;
-                l_acts{1} = l_acts{1} .* mask;
+            end
+            if (do_drop == 0)
+                for i=2:length(l_weights),
+                    l_weights{i} = l_weights{i} ./ 2;
+                end
             end
             for i=2:self.depth,
                 if (i == self.depth)
@@ -148,23 +151,24 @@ classdef SGDevNet < handle
                 end
                 W = l_weights{i-1};
                 A_pre = l_acts{i-1};
-                A_cur = func.feedforward(SGDevNet.bias(A_pre), W);
+                M_pre = d_masks{i-1};
+                A_cur = func.feedforward((SGDevNet.bias(A_pre) .* M_pre), W);
                 l_acts{i} = A_cur;
-                d_masks{i} = ones(size(A_cur));
+                d_masks{i} = ones(size(SGDevNet.bias(A_cur)));
                 if (do_drop == 1)
+                    dr = self.drop_hidden;
                     % Set drop rate based on the current layer type. Don't do
                     % dropping at the output layer.
-                    if ((i < self.depth) && (self.drop_hidden > 1e-8))
-                        mask = rand(size(l_acts{i})) > self.drop_hidden;
+                    if ((i < self.depth) && (dr > 1e-8))
+                        mask = rand(size(SGDevNet.bias(A_cur))) > dr;
                         d_masks{i} = mask;
-                        l_acts{i} = l_acts{i} .* mask;
                     end
                 end
             end
             return
         end
         
-        function [ dW dN ] = backprop(self, l_acts, l_weights, l_grads, l_masks)
+        function [ dW dN ] = backprop(self, l_acts, l_weights, l_grads, l_masks, has_drop)
             % Get per-layer weight gradients, based on the given per-layer
             % activations, per-layer weights, and loss gradients at the output
             % layer (i.e., perform backprop). SUPER IMPORTANT FUNCTION!!
@@ -188,36 +192,43 @@ classdef SGDevNet < handle
                     l_masks{i} = ones(size(l_acts{i}));
                 end
             end
+            if ~exist('has_drop','var')
+                has_drop = 1;
+            end
             dW = cell(1,self.depth-1);
             dN = cell(1,self.depth);
-            for i=0:(self.depth-1),
-                l_num = self.depth - i;
-                if (l_num == self.depth)
+            if (has_drop == 0)
+                for i=2:length(l_weights),
+                    l_weights{i} = l_weights{i} ./ 2;
+                end
+            end 
+            for i=self.depth:-1:1,
+                if (i == self.depth)
                     % BP for final layer (which has no post layer)
                     func = self.out_func;
-                    act_grads = l_grads{l_num};
+                    act_grads = l_grads{i};
                     nxt_weights = zeros(size(act_grads,2),1);
                     nxt_grads = zeros(size(act_grads,1),1);
-                    prv_acts = SGDevNet.bias(l_acts{l_num-1});
-                    prv_weights = l_weights{l_num-1};
+                    prv_acts = (SGDevNet.bias(l_acts{i-1}) .* l_masks{i-1});
+                    prv_weights = l_weights{i-1};
                 end
-                if ((l_num < self.depth) && (l_num > 1))
+                if ((i < self.depth) && (i > 1))
                     % BP for internal layers (with post and pre layers)
                     func = self.act_func;
-                    act_grads = l_grads{l_num};
-                    nxt_weights = l_weights{l_num};
+                    act_grads = l_grads{i};
+                    nxt_weights = l_weights{i};
                     nxt_weights(end,:) = [];
-                    nxt_grads = dN{l_num+1};
-                    prv_acts = SGDevNet.bias(l_acts{l_num-1});
-                    prv_weights = l_weights{l_num-1};
+                    nxt_grads = dN{i+1};
+                    prv_acts = (SGDevNet.bias(l_acts{i-1}) .* l_masks{i-1});
+                    prv_weights = l_weights{i-1};
                 end
-                if (l_num == 1)
+                if (i == 1)
                     % BP for first layer (which has no pre layer)
                     func = self.out_func;
-                    act_grads = l_grads{l_num};
-                    nxt_weights = l_weights{l_num};
+                    act_grads = l_grads{i};
+                    nxt_weights = l_weights{i};
                     nxt_weights(end,:) = [];
-                    nxt_grads = dN{l_num+1};
+                    nxt_grads = dN{i+1};
                     prv_acts = zeros(size(act_grads,1),1);
                     prv_weights = zeros(1,size(act_grads,2));
                 end
@@ -225,11 +236,18 @@ classdef SGDevNet < handle
                 % current layer.
                 cur_grads = func.backprop(nxt_grads, nxt_weights, ...
                     prv_acts, prv_weights, act_grads);
-                cur_grads = cur_grads .* l_masks{l_num};
-                dN{l_num} = cur_grads;
-                if (l_num > 1)
+                cur_masks = l_masks{i};
+                cur_masks(:,end) = [];
+                cur_grads = cur_grads .* cur_masks;
+                dN{i} = cur_grads;
+                if (i > 1)
                     % Compute gradients w.r.t. inter-layer connection weights
-                    dW{l_num-1} = prv_acts' * cur_grads;
+                    dW{i-1} = prv_acts' * cur_grads;
+                end
+            end
+            if (has_drop == 0)
+                for i=2:length(l_weights),
+                    dW{i} = dW{i} ./ 2;
                 end
             end
             return
@@ -258,19 +276,10 @@ classdef SGDevNet < handle
                 else
                     drop_rate = self.drop_hidden;
                 end
-                if ((abs(drop_rate-0.5) < 0.1) && (self.do_sde == 1))
-                    % Halve the weights when net was trained with dropout rate
-                    % near 0.5 for hidden nodes, to approximate sampling from
-                    % the implied distribution over network architectures.
-                    % Weights for first layer are not halved, as they modulate
-                    % inputs from observed rather than hidden nodes.
-                    % 
-                    % Only do this when network was trained in standard dropout
-                    % ensemble mode (i.e. self.do_sde == 1).
-                    % 
-                    W = W .* 0.5;
-                end
                 % Compute activations at the current layer via feedforward
+                if ((i > 1) && (abs(drop_rate - 0.5) < 0.1))
+                    W = W ./ 2;
+                end
                 out_acts = func.feedforward(SGDevNet.bias(out_acts), W);
             end
             return
@@ -290,6 +299,11 @@ classdef SGDevNet < handle
                     dN{i} = dLdA_out;
                     L = L + L_out;
                 end
+                if ((self.lam_l1a > 1e-8) && (i < self.depth))
+                    [An BP] = SGDevNet.norm_rows(A{i});
+                    L = L + (self.lam_l1a * sum(abs(An(:))));
+                    dN{i} = dN{i} + BP(self.lam_l1a * sign(An));
+                end
             end
             return
         end
@@ -307,7 +321,7 @@ classdef SGDevNet < handle
                     lam_dev = self.layer_lams(i).lam_dev;
                     dev_type = self.layer_lams(i).dev_type;
                     [L_dev dLdA_dev] = ...
-                        SGDevNet.drop_loss(A{i},batch_size,dev_reps,dev_type);
+                        SGDevNet.drop_loss(A{i},batch_size,dev_reps,dev_type,1);
                     L = L + (lam_dev * L_dev);
                     dN{i} = (lam_dev * dLdA_dev);
                 end
@@ -342,11 +356,7 @@ classdef SGDevNet < handle
             batch_size = 1000;
             % Compute loss at output layer
             [X_out Y_out] = SGDevNet.sample_points(X, Y, batch_size);
-            if (self.do_sde == 1)
-                A_out = self.feedforward(X_out, l_weights, 1);
-            else
-                A_out = self.feedforward(X_out, l_weights, 0);
-            end
+            A_out = self.feedforward(X_out, l_weights, 0);
             [junk L_out] = self.bprop_output(A_out, Y_out);
             % Compute DEV loss
             if (self.do_dev == 1)
@@ -390,22 +400,43 @@ classdef SGDevNet < handle
                 % at the output layer (i.e. for classification/regression).  %
                 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
                 [X_out Y_out] = SGDevNet.sample_points(X, Y, batch_size);
-                if (self.do_sde == 1)
+                if (self.do_dev ~= 1)
                     [A_out M_out] = self.feedforward(X_out, l_weights, 1);
+                    dN_out = self.bprop_output(A_out, Y_out);
+                    dLdW_out = self.backprop(A_out,l_weights,dN_out,M_out,1);
                 else
                     [A_out M_out] = self.feedforward(X_out, l_weights, 0);
+                    dN_out = self.bprop_output(A_out, Y_out);
+                    dLdW_out = self.backprop(A_out,l_weights,dN_out,M_out,0);
                 end
-                dN_out = self.bprop_output(A_out, Y_out);
-                dLdW_out = self.backprop(A_out, l_weights, dN_out, M_out);
                 if (self.do_dev == 1)
                     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
                     % Compute DEV loss and gradients for the same points used %
                     % for loss/gradient computations at output layer.         %
                     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-                    X_dev = repmat(X_out,dev_reps,1);
+                    X_dev = repmat(X_out,dev_reps-1,1);
                     [A_dev M_dev] = self.feedforward(X_dev, l_weights, 1);
+                    % Merge masks and activations, to include outputs of the
+                    % drop-free network in variance computations.
+                    for i=1:length(A_dev),
+                        A_dev{i} = [A_out{i}; A_dev{i}];
+                        M_dev{i} = [M_out{i}; M_dev{i}];
+                    end
                     dN_dev = self.bprop_dev(A_dev, batch_size, dev_reps);
-                    dLdW_dev = self.backprop(A_dev, l_weights, dN_dev, M_dev);
+                    for i=1:length(A_dev),
+                        A_out{i} = A_dev{i}(1:batch_size,:);
+                        dN_out{i} = dN_dev{i}(1:batch_size,:);
+                        M_out{i} = M_dev{i}(1:batch_size,:);
+                        A_dev{i} = A_dev{i}(((batch_size+1):end),:);
+                        dN_dev{i} = dN_dev{i}(((batch_size+1):end),:);
+                        M_dev{i} = M_dev{i}(((batch_size+1):end),:);
+                    end
+                    dLdW_dev1 = self.backprop(A_out,l_weights,dN_out,M_out,0);
+                    dLdW_dev2 = self.backprop(A_dev,l_weights,dN_dev,M_dev,1);
+                    dLdW_dev = cell(1,length(dLdW_dev1));
+                    for i=1:length(dLdW_dev),
+                        dLdW_dev{i} = dLdW_dev1{i} + dLdW_dev2{i};
+                    end
                 else
                     dLdW_dev = cell(1,length(dLdW_out));
                     for i=1:length(dLdW_out),
@@ -447,10 +478,10 @@ classdef SGDevNet < handle
                     end
                 end
                 max_ratios(e) = max(max_sratio(:,e));
-                if (e > 50)
-                    plot(1:e,max_ratios(1:e));
-                    drawnow();
-                end
+                %if (e > 50)
+                %    plot(1:e,max_ratios(1:e));
+                %    drawnow();
+                %end
                 % Apply updates to inter-layer weights
                 for l=1:(self.depth-1),
                     dW = layer_dW{l};
@@ -458,7 +489,8 @@ classdef SGDevNet < handle
                     dW = dW .* scale;
                     l_weights = self.layer_weights{l};
                     % Update weights using momentum-blended gradients
-                    l_weights = l_weights - (rate * dW);
+                    rater = min(rate, (e/1500)*rate);
+                    l_weights = l_weights - (rater * dW);
                     % Clip incoming weights for each node to bounded L2 ball.
                     l2_bnd = self.layer_lams(l+1).l2_bnd;
                     wt_scales = l2_bnd ./ sqrt(sum(l_weights.^2,1));
@@ -487,6 +519,8 @@ classdef SGDevNet < handle
                         fprintf('    %d: O=%.4f, D=%.4f, R=%.4f\n',...
                             e, L_out, L_dev, L_reg);
                     end
+                    draw_usps_filters(self.layer_weights{1}',36,1,1,gcf());
+                    drawnow();
                 end
             end
             fprintf('\n');
@@ -506,12 +540,15 @@ classdef SGDevNet < handle
         % DROPOUT ENSEMBLE VARIANCE LOSS %
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
         
-        function [L dLdF] = drop_loss(F, b_obs, b_reps, dev_type)
+        function [L dLdF] = drop_loss(F, b_obs, b_reps, dev_type, use_shepherd)
             % Compute feature activations from droppy observations, and
             % grab a function handle for backpropping through activation
             %
             if ~exist('dev_type','var')
                 dev_type = 1;
+            end
+            if ~exist('use_shepherd','var')
+                use_shepherd = 0;
             end
             switch dev_type
                 case 1
@@ -533,14 +570,23 @@ classdef SGDevNet < handle
             % Compute mean of each repeated observations activations
             n = b_reps;
             m = (b_obs * b_reps * N);
-            Fm = sum(Ft,3) ./ n;
+            if (use_shepherd ~= 1)
+                Fm = sum(Ft,3) ./ n;
+            else
+                Fm = Ft(:,:,1);
+            end
             % Compute differences between individual activations and means
             Fd = bsxfun(@minus, Ft, Fm);
             % Compute droppy variance loss
             L = sum(Fd(:).^2) / m;
-            % Compute droppy variance gradient (magic numbers everywhere!)
-            dLdFt = -(2/m) * ((((1/n) - 1) * Fd) + ...
-                ((1/n) * bsxfun(@minus, sum(Fd,3), Fd)));
+            if (use_shepherd ~= 1)
+                % Compute droppy variance gradient (magic numbers everywhere!)
+                dLdFt = -(2/m) * ((((1/n) - 1) * Fd) + ...
+                    ((1/n) * bsxfun(@minus, sum(Fd,3), Fd)));
+            else
+                dLdFt = (2*Fd) ./ m;
+                dLdFt(:,:,1) = -sum(dLdFt(:,:,2:end),3);
+            end
             dLdF = zeros(size(F));
             for i=1:b_reps,
                 b_start = ((i-1) * b_obs) + 1;
@@ -648,6 +694,17 @@ classdef SGDevNet < handle
                 bias_val = 1;
             end
             Xb = [X (bias_val * ones(size(X,1),1))];
+            return
+        end
+        
+        function [ F BP ] = norm_rows(X)
+            % L2 normalize X by rows, and return both the row-normalized matrix
+            % and a function handle for backpropagating through normalization.
+            N = sqrt(sum(X.^2,2) + 1e-6);
+            F = bsxfun(@rdivide,X,N);
+            % Backpropagate through normalization for unit norm
+            BP = @( D ) ...
+                (bsxfun(@rdivide,D,N) - bsxfun(@times,F,(sum(D.*X,2)./(N.^2))));
             return
         end
         
