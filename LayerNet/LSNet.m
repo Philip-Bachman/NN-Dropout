@@ -1,27 +1,25 @@
-classdef LDNet < handle
-    % An LDNet is a composition of LDLayers. This class is designed for testing
-    % and experimenting with Dropout Ensemble Variance regularization.
+classdef LSNet < handle
+    % An LSNet is a composition of LDLayers. This is a layer-based network,
+    % intended for experimenting with FD functional regularization.
     %
     
     properties
         % layers is a cell array of handles/pointers for the layers from which
-        % this LDNet is composed.
+        % this LSNet is composed.
         layers
-        % layer_count gives the number of layers in this LDNet (not including
+        % layer_count gives the number of layers in this LSNet (not including
         % the input layer).
         layer_count
         % out_loss gives the loss function to apply at output layer
         out_loss
         % lam_l2 gives an L2 regularization penalty applied to all weights in
-        % this LDNet.
+        % this LSNet.
         lam_l2
         % lam_l1 gives an L1 regularization penalty applied to all weights in
-        % this LDNet.
+        % this LSNet.
         lam_l1
-        % dev_lams gives the lam_dev for each layer
-        dev_lams
-        % dev_types gives the dev type for each layer
-        dev_types
+        % ord_lams gives the lam for each FD order
+        ord_lams
         % drop_input gives the drop rate for input layer
         drop_input
         % drop_hidden gives the drop rate for hidden layers
@@ -29,14 +27,10 @@ classdef LDNet < handle
         % drop_undrop gives the fraction of training examples to not apply any
         % dropping to
         drop_undrop
-        % do_dev tells whether to do DEV regularization or standard dropout
-        do_dev
-        % dev_pre
-        dev_pre
     end % END PROPERTIES
     
     methods
-        function [ self ] = LDNet( layer_sizes, act_func, loss_func )
+        function [ self ] = LSNet( layer_sizes, act_func, loss_func )
             self.layer_count = numel(layer_sizes) - 1;
             self.layers = cell(1,self.layer_count);
             for i=1:self.layer_count,
@@ -50,36 +44,33 @@ classdef LDNet < handle
                 self.layers{i} = LDLayer(dim_in, dim_out, afun);
             end
             if ~exist('loss_func','var')
-                self.out_loss = @LDNet.loss_lsq;
+                self.out_loss = @LSNet.loss_lsq;
             else
                 self.out_loss = loss_func;
             end
             self.lam_l2 = 0;
             self.lam_l1 = 0;
+            self.ord_lams = [0.1 0.1];
             % Set dropout rate parameters
             self.drop_input = 0;
             self.drop_hidden = 0.5;
             self.drop_undrop = 0;
-            self.do_dev = 0;
-            self.dev_pre = 0;
-            self.dev_types = ones(1,self.layer_count);
-            self.dev_lams = zeros(1,self.layer_count);
             return
         end
         
         function [ acc ] = check_acc(self, X, Y)
             % Check classification performance on the given data
             if (size(Y,2) == 1)
-                Y = LDNet.to_cats(Y);
+                Y = LSNet.to_cats(Y);
             else
-                Y = LDNet.class_cats(Y);
+                Y = LSNet.class_cats(Y);
             end
             M = self.get_drop_masks(size(X,1));
             for i=1:length(M),
                 M{i} = ones(size(M{i}));
             end
             F = self.feedforward(X,M,self.struct_weights());
-            Yh = LDNet.class_cats(F{end});
+            Yh = LSNet.class_cats(F{end});
             acc = sum(Yh == Y) / numel(Y);
             return
         end
@@ -95,7 +86,7 @@ classdef LDNet < handle
         end
         
         function [ Ws ] = init_weights(self, wt_scale, b_scale)
-            % Initialize the weights for each layer in this LDNet. Return a
+            % Initialize the weights for each layer in this LSNet. Return a
             % struct array containing the weight structs for each layer.
             if ~exist('b_scale','var')
                 b_scale = wt_scale;
@@ -113,7 +104,7 @@ classdef LDNet < handle
         end
         
         function [ Ws ] = set_weights(self, Ws)
-            % Set weights for this LDNet, using the struct/vector W.
+            % Set weights for this LSNet, using the struct/vector W.
             %
             if ~isstruct(Ws)
                 Ws = self.struct_weights(Ws);
@@ -177,7 +168,7 @@ classdef LDNet < handle
                 d_mask = (rand(mask_count,mask_dim) > drop_rate);
                 M{i} = bsxfun(@or, d_mask, u_mask);
                 M{i} = bsxfun(@times, M{i}, 1 ./ mean(M{i},2));
-                if ((no_drop == 1) && (i > 1))
+                if (no_drop == 1)
                     M{i} = ones(size(M{i}));
                 end
             end
@@ -203,9 +194,9 @@ classdef LDNet < handle
                 lay_i = self.layers{i};
                 M_pre = M{i};
                 if (i == 1)
-                    A_in = LDNet.bias(X) .* M_pre;
+                    A_in = LSNet.bias(X) .* M_pre;
                 else
-                    A_in = LDNet.bias(A_post{i-1}) .* M_pre;
+                    A_in = LSNet.bias(A_post{i-1}) .* M_pre;
                 end
                 [post pre] = lay_i.feedforward(A_in, Ws(i).W);
                 A_post{i} = post;
@@ -218,16 +209,16 @@ classdef LDNet < handle
         
         function [ dLdWs dLdX ] = backprop(self, ...
                 dLdA_post, dLdA_pre, A_post, X, M, Ws)
-            % Backprop through the layers of this LDNet.
+            % Backprop through the layers of this LSNet.
             %
             dLdWs = struct();
             for i=self.layer_count:-1:1,
                 lay_i = self.layers{i};
                 M_pre = M{i};
                 if (i == 1)
-                    A_in = LDNet.bias(X) .* M_pre;
+                    A_in = LSNet.bias(X) .* M_pre;
                 else
-                    A_in = LDNet.bias(A_post{i-1}) .* M_pre;
+                    A_in = LSNet.bias(A_post{i-1}) .* M_pre;
                 end
                 [dLdWi dLdAi] = lay_i.backprop(dLdA_post{i}, dLdA_pre{i}, ...
                     A_post{i}, A_in, Ws(i).W);
@@ -259,7 +250,7 @@ classdef LDNet < handle
                 opts = struct();
             end
             % Check and set method specific options to valid values
-            opts = LDNet.check_opts(opts);
+            opts = LSNet.check_opts(opts);
             if isfield(opts,'lam_l2')
                 self.lam_l2 = opts.lam_l2;
             end
@@ -268,7 +259,7 @@ classdef LDNet < handle
             end
             % Loop over SGD updates for randomly sampled minibatches
             batch_size = opts.batch_size;
-            dev_reps = opts.dev_reps;
+            fd_len = opts.fd_len;
             rate = opts.start_rate;
             decay = opts.decay_rate;
             momentum = opts.momentum;
@@ -289,24 +280,15 @@ classdef LDNet < handle
                     Xb = X;
                     Yb = Y;
                 end
-                if (self.do_dev == 1)
-                    Xb = repmat(Xb,dev_reps,1);
-                end
                 % Get dropout masks for this batch
                 Mb = self.get_drop_masks(size(Xb,1));
-                if (self.do_dev == 1)
-                    % For the undropped obs, set hidden-layer masks to ones
-                    for l=2:self.layer_count,
-                        Mb{l}(1:batch_size,:) = 1;
-                    end
-                end
+                % Sample FD chains for this batch
+                max_ord = numel(self.ord_lams);
+                [Xc fd_lens] = LSNet.sample_fd_chains(...
+                    X, batch_size, max_ord, 5*fd_len, fd_len);
                 % Compute loss and weight gradients for this batch
-                if (self.do_dev ~= 1)
-                    [L dLdWs] = self.sde_loss_W(Ws, Xb, Yb, Mb);
-                else
-                    [L dLdWs] = ...
-                        self.dev_loss_W(Ws, Xb, Yb, Mb, batch_size, dev_reps);
-                end
+                [L dLdWs Lv] = self.net_joint_loss(Ws, Xb, Yb, Mb, Xc, fd_lens);
+                % Update network parameters based on computed gradients
                 rater = min(rate, ((i / 1000) * rate));
                 for l=1:self.layer_count,
                     dLdWs_mom(l).W = (momentum * dLdWs_mom(l).W) + ...
@@ -331,14 +313,6 @@ classdef LDNet < handle
                         idx = 1:size(X,1);
                     end
                     acc_tr = self.check_acc(X(idx,:),Y(idx,:));
-%                     Mb = self.get_drop_masks(size(X(idx,:),1),0);
-%                     Ab = self.feedforward(X(idx,:),Mb,Ws);
-%                     mean_acts = [];
-%                     for l=1:(self.layer_count - 1),
-%                         mean_acts = [mean_acts mean(Ab{l},1)];
-%                     end
-%                     plot(mean_acts,'o');
-%                     drawnow();
                     if (opts.do_validate == 1)
                         if(size(opts.Xv,1) > 1000)
                             idx = randsample(size(opts.Xv,1),1000);
@@ -351,20 +325,20 @@ classdef LDNet < handle
                     else                        
                         fprintf('Round %d, acc_tr: %.4f\n',i,acc_tr);
                     end
-                    fprintf('    Lo: %.4f, Ld: %.4f, Lr: %.4f\n',L(1),L(2),L(3));
+                    fprintf('    Lo: %.4f, Lf: %.4f, Lr: %.4f\n',Lv(1),Lv(2),Lv(3));
                 end
             end
             return
         end
         
         function [ accs ] = check_grad(self, X, Y, grad_checks, opts)
-            % Check backprop computations for this LDNet.
+            % Check backprop computations for this LSNet.
             %
             if ~exist('opts','var')
                 opts = struct();
             end
             % Check and set method specific options to valid values
-            opts = LDNet.check_opts(opts);
+            opts = LSNet.check_opts(opts);
             % Use minFunc's directional derivative gradient checking
             batch_size = opts.batch_size;
             dev_reps = opts.dev_reps;
@@ -408,89 +382,110 @@ classdef LDNet < handle
             return
         end
         
-        function [ L dLdWs ] = sde_loss_W(self, Ws, X, Y, M)
-            % Loss wrapper LDNet training wrt layer parameters.
-            %
+        function [ L dLdWs Lv ] = net_joint_loss(self, Ws, X, Y, M, Xc, c_lens)
+            % Compute joint loss and gradient for various objectives
             return_struct = 1;
             if ~isstruct(Ws)
                 Ws = self.struct_weights(Ws);
                 return_struct = 0;
             end
+            [L_out dLdWs_out] = self.net_out_loss(Ws, X, Y, M);
+            [L_fd dLdWs_fd] = self.net_fd_loss(Ws, Xc, c_lens);
+            [L_reg dLdWs_reg] = self.net_reg_loss(Ws);
+            % Combine losses
+            Lv = [L_out L_fd L_reg];
+            L = sum(Lv);
+            % Combine gradients
+            dLdWs = struct();
+            for i=1:self.layer_count,
+                dLdWs(i).W = dLdWs_out(i).W + dLdWs_fd(i).W + dLdWs_reg(i).W;
+            end
+            if (return_struct == 0)
+                dLdWs = self.vector_weights(dLdWs);
+            end  
+            return
+        end
+
+        function [ L dLdWs ] = net_out_loss(self, Ws, X, Y, M)
+            % Compute loss and gradient of network outputs for X.
+            %
             A_post = self.feedforward(X, M, Ws);
             % Compute loss and gradient at output layer
-            Yh = A_post{end};
-            [L_out dL_out] = self.out_loss(Yh, Y);
+            [L_out dL_out] = self.out_loss(A_post{end}, Y);
             dLdA_post = cell(1,length(A_post));
             dLdA_pre = cell(1,length(A_post));
-            for i=1:length(A_post),
+            for i=1:self.layer_count,
                 dLdA_post{i} = zeros(size(A_post{i}));
                 dLdA_pre{i} = zeros(size(A_post{i}));
             end
             dLdA_post{end} = dL_out;
+            % Backprop all gradients
             dLdWs = self.backprop(dLdA_post, dLdA_pre, A_post, X, M, Ws);
-            % Add loss and gradient for L2/L1 parameter regularization
-            L_reg = 0;
-            for i=1:self.layer_count,
-                L_reg = L_reg + (self.lam_l2 * sum(sum(Ws(i).W.^2)));
-                dLdWs(i).Ws.w = dLdWs(i).W + (2 * (self.lam_l2 * Ws(i).W));
-            end
-            % Combine losses
-            L = [L_out 0 L_reg];
-            if (return_struct == 0)
-                L = sum(L);
-                dLdWs = self.vector_weights(dLdWs);
-            end
+            L = L_out;
             return
         end
         
-        function [ L dLdWs ] = dev_loss_W(self, Ws, X, Y, M, b_size, d_reps)
-            % Loss wrapper LDNet training wrt layer parameters.
+        function [ L dLdWs ] = net_fd_loss(self, Ws, Xc, c_lens)
+            % Compute fd-based curvature loss based on fd-chains for the FD
+            % chains in Xc.
             %
-            return_struct = 1;
-            if ~isstruct(Ws)
-                Ws = self.struct_weights(Ws);
-                return_struct = 0;
+            if (max(self.ord_lams) < 1e-6)
+                % Shortciruit, if no FD penalty is to be applied
+                L = 0;
+                dLdWs = struct();
+                for i=1:self.layer_count,
+                    dLdWs(i).W = zeros(size(Ws(i).W));
+                end
+                return
             end
-            [A_post A_pre] = self.feedforward(X, M, Ws);
-            % Compute loss and gradient at output layer
-            Yh = A_post{end}(1:b_size,:);
-            [L_out dL_out] = self.out_loss(Yh, Y);
-            dLdA_post = cell(1,length(A_post));
-            dLdA_pre = cell(1,length(A_post));
+            fd_pts = length(Xc);
+            % Compute activations for the FD chains.
+            As = cell(1,self.layer_count);
+            Ms = cell(1,self.layer_count);
             for i=1:self.layer_count,
-                dLdA_post{i} = zeros(size(A_post{i}));
-                dLdA_pre{i} = zeros(size(A_pre{i}));
+                As{i} = [];
+                Ms{i} = [];
             end
-            dLdA_post{end}(1:b_size,:) = dL_out;
-            % Compute loss and gradient due to Dropout Ensemble Variance
-            L_dev = 0;
-            for i=1:self.layer_count,
-                if (self.dev_pre == 1)
-                    [Li dLdFi] = LDNet.drop_loss(A_pre{i}, b_size, d_reps, ...
-                        self.dev_types(i), 0);
-                    L_dev = L_dev + (self.dev_lams(i) * Li);
-                    dLdA_pre{i} = dLdA_pre{i} + (self.dev_lams(i) * dLdFi);
-                else
-                    [Li dLdFi] = LDNet.drop_loss(A_post{i}, b_size, d_reps, ...
-                        self.dev_types(i), 0);
-                    L_dev = L_dev + (self.dev_lams(i) * Li);
-                    dLdA_post{i} = dLdA_post{i} + (self.dev_lams(i) * dLdFi);
+            M = self.get_drop_masks(size(Xc{1},1));
+            Ac = cell(1,fd_pts);
+            for i=1:fd_pts,
+                Ai = self.feedforward(Xc{i}, M, Ws);
+                Ac{i} = Ai{end};
+                for j=1:self.layer_count,
+                    As{j} = [As{j}; Ai{j}];
+                    Ms{j} = [Ms{j}; M{j}];
                 end
             end
-            % Backprop all gradients
-            dLdWs = self.backprop(dLdA_post, dLdA_pre, A_post, X, M, Ws);
-            % Add loss and gradient for L2/L1 parameter regularization
-            L_reg = 0;
+            % Compute losses and gradients for FD gradient penalty
+            [L_fd dL_fd] = LSNet.loss_fd(Ac, c_lens, self.ord_lams);
+            dLdA_post = cell(1,self.layer_count);
+            dLdA_pre = cell(1,self.layer_count);
             for i=1:self.layer_count,
-                L_reg = L_reg + (self.lam_l2 * sum(sum(Ws(i).W.^2)));
-                dLdWs(i).W = dLdWs(i).W + ((2 * self.lam_l2) * Ws(i).W);
+                dLdA_post{i} = zeros(size(As{i}));
+                dLdA_pre{i} = zeros(size(As{i}));
             end
-            % Combine losses
-            L = [L_out L_dev L_reg];
-            if (return_struct == 0)
-                L = sum(L);
-                dLdWs = self.vector_weights(dLdWs);
-            end            
+            dLdA_post{end} = [];
+            % Stack chain points and gradients for backproppin' and lockin'
+            Xs = [];
+            for i=1:fd_pts,
+                Xs = [Xs; Xc{i}];
+                dLdA_post{end} = [dLdA_post{end}; dL_fd{i}];
+            end
+            % Backprop gradients
+            dLdWs = self.backprop(dLdA_post, dLdA_pre, As, Xs, Ms, Ws);
+            % Merge losses for the different orders
+            L = sum(L_fd);
+            return
+        end
+        
+        function [ L dLdWs ] = net_reg_loss(self, Ws)
+            % Add loss and gradient for general L1/L2 parameter regularizers
+            L = 0;
+            dLdWs = struct();
+            for i=1:self.layer_count,
+                L = L + (self.lam_l2 * sum(sum(Ws(i).W.^2)));
+                dLdWs(i).W = (2 * self.lam_l2) * Ws(i).W;
+            end
             return
         end
         
@@ -498,65 +493,175 @@ classdef LDNet < handle
     
     methods (Static = true)
         
-        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-        % DROPOUT ENSEMBLE VARIANCE LOSS %
-        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        % Functional norm accessory functions %
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
         
-        function [L dLdF] = drop_loss(F, b_obs, b_reps, dev_type, use_shepherd)
-            % Compute feature activations from droppy observations, and
-            % grab a function handle for backpropping through activation
+        function [ L_fd dL_fd ] = loss_fd(A_out,fd_lens,ord_lams)
+            % This computes gradients for curvature loss of multiple orders,
+            % given the fd chain points in A_in, and their associated output
+            % values in A_out. 
             %
-            if ~exist('dev_type','var')
-                dev_type = 1;
+            % length(A_out) should equal numel(ord_lams)+1
+            %
+            % A_out{i} should be give sampled outputs for the ith link in some
+            % fd chain.
+            %
+            % ord_lams gives the weightings for curvature order penalties
+            %
+            % fd_lens gives the step size of the underlying fd chains
+            %
+            % L_fd{i} holds the vector of losses for the fd subchain of order i
+            %
+            % dL_fd{i} holds the matrix of gradients on the function outputs in
+            % A_out{i}.
+            %
+            obs_count = size(A_out{1},1);
+            L_fd = zeros(1,numel(ord_lams));
+            dL_fd = cell(1,length(A_out));
+            for i=1:length(A_out),
+                dL_fd{i} = zeros(size(A_out{i}));
             end
-            if ~exist('use_shepherd','var')
-                use_shepherd = 0;
+            % Compute loss and gradient for each fd chain, for each order
+            for i=1:numel(ord_lams),
+                olam = ord_lams(i);
+                fd_coeffs = zeros(1,(i+1));
+                for j=0:i,
+                    fd_coeffs(j+1) = (-1)^j * nchoosek(i,j);
+                end
+                fd_diffs = zeros(size(A_out{1}));
+                for j=1:(i+1),
+                    fd_diffs = fd_diffs + (fd_coeffs(j) * A_out{j});
+                end
+                fd_ls = fd_lens.^i; %ones(size(fd_lens.^i));
+                L_fd(i) = sum(sum(bsxfun(@rdivide,fd_diffs.^2,fd_ls.^2)));
+                L_fd(i) = (olam / obs_count) * L_fd(i);
+                for j=1:(i+1),
+                    dL_j = bsxfun(@rdivide,(fd_coeffs(j)*fd_diffs),(fd_ls.^2));
+                    dL_fd{j} = dL_fd{j} + ((2 * (olam / obs_count)) * dL_j);
+                end
             end
-            switch dev_type
-                case 1
-                    [F bp_F] = LDNet.norm_transform(F);
-                case 2
-                    [F bp_F] = LDNet.tanh_transform(F);
-                case 3
-                    [F bp_F] = LDNet.line_transform(F);
-                otherwise
-                    error('Improperly specified dev_type');
+            return
+        end
+        
+        function [L_fd dL_fd] = loss_fd_huber(A_out,fd_lens,ord_lams)
+            % This computes gradients for curvature loss of multiple orders,
+            % given the fd chain points in A_in, and their associated output
+            % values in A_out. 
+            %
+            % General idea is same as for SmoothNet.loss_fd, except a Huberized
+            % loss is applied to finite differences, rather than a pure squared
+            % loss. This helps mitigate the strong "outlier" effect that occurs
+            % for FDs of higher-order curvature, due to tiny denominators.
+            %
+            if ~exist('hub_thresh','var')
+                hub_thresh = 2.0;
             end 
-            N = size(F,2);
-            Ft = zeros(b_obs, N, b_reps);
-            for i=1:b_reps,
-                b_start = ((i-1) * b_obs) + 1;
-                b_end = b_start + (b_obs - 1);
-                Ft(:,:,i) = F(b_start:b_end,:);
+            obs_count = size(A_out{1},1);
+            L_fd = zeros(1,numel(ord_lams));
+            dL_fd = cell(1,length(A_out));
+            for i=1:length(A_out),
+                dL_fd{i} = zeros(size(A_out{i}));
             end
-            % Compute mean of each repeated observations activations
-            n = b_reps;
-            m = (b_obs * b_reps * N);
-            if (use_shepherd ~= 1)
-                Fm = sum(Ft,3) ./ n;
+            % Compute loss and gradient for each fd chain, for each order
+            for i=1:numel(ord_lams),
+                olam = ord_lams(i);
+                fd_coeffs = zeros(1,(i+1));
+                for j=0:i,
+                    fd_coeffs(j+1) = (-1)^j * nchoosek(i,j);
+                end
+                fd_diffs = zeros(size(A_out{1}));
+                for j=1:(i+1),
+                    fd_diffs = fd_diffs + (fd_coeffs(j) * A_out{j});
+                end
+                fd_ls = fd_lens.^i;
+                fd_vals = bsxfun(@rdivide,fd_diffs,fd_ls);
+                % Get masks for FD values subject to quadratic/linear losses
+                quad_mask = bsxfun(@lt, abs(fd_vals), hub_thresh);
+                line_mask = bsxfun(@ge, abs(fd_vals), hub_thresh);
+                % Compute quadratic and linear parts of FD loss
+                quad_loss = fd_vals.^2;
+                quad_loss = quad_loss .* quad_mask;
+                line_loss = (((2*hub_thresh) * abs(fd_vals)) - hub_thresh^2);
+                line_loss = line_loss .* line_mask;
+                L_fd(i) = sum(quad_loss(:)) + sum(line_loss(:));
+                L_fd(i) = (olam / obs_count) * L;
+                for j=1:(i+1),
+                    dL_quad = 2*bsxfun(@rdivide,(fd_coeffs(j)*fd_vals),fd_ls);
+                    dL_line = 2*hub_thresh*fd_coeffs(j)*sign(fd_vals);
+                    dL_j = (dL_quad .* quad_mask) + (dL_line .* line_mask);
+                    dL_fd{j} = dL_fd{j} + (olam * dL_j);
+                end
+            end
+            return
+        end
+        
+        function [ X_fd fd_lens ] = sample_fd_chains(X, chain_count,...
+                max_order, fuzz_len, fd_len, bias)
+            % Sample chains of points for forward FD estimates of directional 
+            % higher-order derivatives. The anchor point for each sampled chain
+            % is sampled from a "fuzzed" version of the empirical distribution
+            % described by the points in X.
+            %
+            % Sample chain directions from a uniform distribution over the
+            % surface of a hypersphere of dimension size(X,2). Then, rescale
+            % these directions based on fd_len. If given, apply the "biasing"
+            % transform (a matrix) to the directions prior to setting lengths.
+            %
+            if ~exist('bias','var')
+                bias = eye(size(X,2));
+            end
+            if ~exist('strict_len','var')
+                strict_len = 1;
+            end
+            chain_len = max_order + 1;
+            % Sample points from the empirical distribution described by X,
+            % convolved with the isotropic distribution with a length
+            % distribution given by a Gaussian with std dev fuzz_len.
+            s_idx = randsample(size(X,1),chain_count,true);
+            Xs = X(s_idx,:);
+            Xd = randn(size(Xs));
+            Xd = bsxfun(@rdivide, Xd, max(sqrt(sum(Xd.^2,2)),1e-8));
+            Xd = bsxfun(@times, Xd, (fuzz_len * abs(randn(size(Xd,1),1))));
+            Xs = Xs + Xd;
+            % Sample (biased & scaled) displacement directions for each chain.
+            Xd = randn(size(Xs));
+            Xd = Xd * bias;
+            Xd = bsxfun(@rdivide, Xd, max(sqrt(sum(Xd.^2,2)),1e-8));
+            if (strict_len ~= 1)
+                % Sample fd lengths from a scaled abs(normal) distribution
+                fd_lens = (fd_len/2) * abs(randn(size(Xd,1),1));
+                fd_lens = fd_lens + fd_len;
             else
-                Fm = Ft(:,:,1);
+                % Set fd lengths strictly (i.e. to a fixed value)
+                fd_lens = fd_len * ones(size(Xd,1),1);
             end
-            % Compute differences between individual activations and means
-            Fd = bsxfun(@minus, Ft, Fm);
-            % Compute droppy variance loss
-            L = sum(Fd(:).^2) / m;
-            if (use_shepherd ~= 1)
-                % Compute droppy variance gradient (magic numbers everywhere!)
-                dLdFt = -(2/m) * ((((1/n) - 1) * Fd) + ...
-                    ((1/n) * bsxfun(@minus, sum(Fd,3), Fd)));
-            else
-                dLdFt = (2*Fd) ./ m;
-                dLdFt(:,:,1) = -sum(dLdFt(:,:,2:end),3);
+            % Scale sampled displacement directions using sampled fd lengths
+            Xd = bsxfun(@times, Xd, fd_lens);
+            % Construct forward chains by stepwise displacement
+            X_fd = cell(1,chain_len);
+            for i=0:(chain_len-1),
+                X_fd{i+1} = Xs + (i * Xd);
             end
-            dLdF = zeros(size(F));
-            for i=1:b_reps,
-                b_start = ((i-1) * b_obs) + 1;
-                b_end = b_start + (b_obs - 1);
-                dLdF(b_start:b_end,:) = squeeze(dLdFt(:,:,i));
+            return
+        end
+        
+        function [ nn_len ] = compute_nn_len(X, sample_count)
+            % Compute a length scale for curvature regularization. 
+            % Sample observations at random and compute the distance to their
+            % nearest neighbor. Use these nearest neighbor distances to compute
+            % nn_len.
+            %
+            obs_count = size(X,1);
+            dists = zeros(sample_count,1);
+            for i=1:sample_count,
+                idx = randi(obs_count);
+                x1 = X(idx,:);
+                dx = sqrt(sum(bsxfun(@minus,X,x1).^2,2));
+                dx(idx) = max(dx) + 1;
+                dists(i) = min(dx);
             end
-            % Backprop through the transform determined by dev_type
-            dLdF = bp_F(dLdF);
+            nn_len = median(dists) / 2;
             return
         end
         
@@ -702,16 +807,16 @@ classdef LDNet < handle
         
         function [ Yi ] = to_inds( Yc )
             % This wraps class_cats and class_inds.
-            Yi = LDNet.class_inds(Yc);
-            Yc = LDNet.class_cats(Yi);
-            Yi = LDNet.class_inds(Yc);
+            Yi = LSNet.class_inds(Yc);
+            Yc = LSNet.class_cats(Yi);
+            Yi = LSNet.class_inds(Yc);
             return
         end
         
         function [ Yc ] = to_cats( Yc )
             % This wraps class_cats and class_inds.
-            Yi = LDNet.class_inds(Yc);
-            Yc = LDNet.class_cats(Yi);
+            Yi = LSNet.class_inds(Yc);
+            Yc = LSNet.class_cats(Yi);
             return
         end
         
@@ -745,8 +850,8 @@ classdef LDNet < handle
             if ~isfield(opts, 'batch_size')
                 opts.batch_size = 100;
             end
-            if ~isfield(opts, 'dev_reps')
-                opts.dev_reps = 4;
+            if ~isfield(opts, 'fd_len')
+                opts.fd_len = 0.05;
             end
             if ~isfield(opts, 'do_validate')
                 opts.do_validate = 0;

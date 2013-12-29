@@ -111,10 +111,10 @@ classdef LDLayer < handle
             return
         end
         
-        function [ A_post A_pre ] = feedforward(self, X, Wm, drop_scales)
+        function [ A_post A_pre ] = feedforward(self, X, Wm)
             % Compute feedforward activations for the inputs in X. Return both
             % the pre and post transform values.
-            A_pre = bsxfun(@times, (X * Wm'), drop_scales);
+            A_pre = X * Wm';
             % Pass linear function outputs through self.act_trans.
             A_post = self.act_trans(A_pre, 'ff');
             % Update timing info
@@ -122,17 +122,17 @@ classdef LDLayer < handle
             return
         end
         
-        function [ dLdW dLdX ] = backprop(self, ...
-                dLdA_post, dLdA_pre, A_post, X, Wm, drop_scales)
+        function [ dLdW dLdX ] = ...
+                backprop(self, dLdA_post, dLdA_pre, A_post, X, Wm)
             % Backprop through the linear functions and post-linear transforms
             % for this layer.
             %
             dAdF = self.act_trans(A_post, 'bp');
             dLdF = (dLdA_post .* dAdF) + dLdA_pre;
             % Compute gradients with respect to linear function parameters
-            dLdW = dLdF' * bsxfun(@times, X, drop_scales);
+            dLdW = dLdF' * X;
             % Compute gradients with respect to input matrix X
-            dLdX = bsxfun(@times, drop_scales, (dLdF * Wm));
+            dLdX = dLdF * Wm;
             % Update timing info
             self.bp_evals = self.bp_evals + size(X,1);
             return
