@@ -18,6 +18,8 @@ classdef LDNet < handle
         % lam_l1 gives an L1 regularization penalty applied to all weights in
         % this LDNet.
         lam_l1
+        % wt_bnd gives an L2 norm bound on incoming wweights for each node
+        wt_bnd
         % dev_lams gives the lam_dev for each layer
         dev_lams
         % dev_types gives the dev type for each layer
@@ -56,6 +58,7 @@ classdef LDNet < handle
             end
             self.lam_l2 = 0;
             self.lam_l1 = 0;
+            self.wt_bnd = 5.0;
             % Set dropout rate parameters
             self.drop_input = 0;
             self.drop_hidden = 0.5;
@@ -81,6 +84,25 @@ classdef LDNet < handle
             F = self.feedforward(X,M,self.struct_weights());
             Yh = LDNet.class_cats(F{end});
             acc = sum(Yh == Y) / numel(Y);
+            return
+        end
+        
+        function [ loss acc ] = check_loss(self, X, Y)
+            % Check classification performance on the given data
+            if (size(Y,2) == 1)
+                Yc = LDNet.to_cats(Y);
+            else
+                Yc = LDNet.class_cats(Y);
+            end
+            M = self.get_drop_masks(size(X,1));
+            for i=1:length(M),
+                M{i} = ones(size(M{i}));
+            end
+            F = self.feedforward(X,M,self.struct_weights());
+            Yh = F{end};
+            Yhc = LDNet.class_cats(Yh);
+            loss = self.out_loss(Yh, Y);
+            acc = sum(Yhc == Yc) / numel(Yc);
             return
         end
         
@@ -289,35 +311,34 @@ classdef LDNet < handle
                     Xb = X;
                     Yb = Y;
                 end
-                if (self.do_dev == 1)
-                    Xb = repmat(Xb,dev_reps,1);
-                end
-                % Get dropout masks for this batch
-                Mb = self.get_drop_masks(size(Xb,1));
-                if (self.do_dev == 1)
+                if (self.do_dev ~= 1)
+                    % Get dropout masks for this batch
+                    Mb = self.get_drop_masks(size(Xb,1));
+                    % Compute loss and weight gradients
+                    [L dLdWs] = self.sde_loss(Ws, Xb, Yb, Mb);
+                else
+                    % Repeat observations, for dropout ensembling
+                    Xb = repmat(Xb,(dev_reps),1);
+                    % Get dropout masks for this batch
+                    Mb = self.get_drop_masks(size(Xb,1));
                     % For the undropped obs, set hidden-layer masks to ones
-                    for l=2:self.layer_count,
+                    for l=1:self.layer_count,
                         Mb{l}(1:batch_size,:) = 1;
                     end
-                end
-                % Compute loss and weight gradients for this batch
-                if (self.do_dev ~= 1)
-                    [L dLdWs] = self.sde_loss_W(Ws, Xb, Yb, Mb);
-                else
                     [L dLdWs] = ...
-                        self.dev_loss_W(Ws, Xb, Yb, Mb, batch_size, dev_reps);
+                        self.dev_loss(Ws, Xb, Yb, Mb, batch_size, dev_reps);
                 end
-                rater = min(rate, ((i / 1000) * rate));
+                gentle_rate = min(rate, ((i / 1000) * rate));
                 for l=1:self.layer_count,
                     dLdWs_mom(l).W = (momentum * dLdWs_mom(l).W) + ...
                         ((1-momentum) * dLdWs(l).W);
                     % Update weight vector
-                    Ws(l).W = Ws(l).W - (rater * dLdWs_mom(l).W);
+                    Ws(l).W = Ws(l).W - (gentle_rate * dLdWs_mom(l).W);
                 end
                 rate = rate * decay;
                 % Bound weights
                 for l=1:self.layer_count,
-                    Ws(l).W = self.layers{l}.bound_weights(Ws(l).W, 4);
+                    Ws(l).W = self.layers{l}.bound_weights(Ws(l).W,self.wt_bnd);
                 end
                 if ((i == 1) || (mod(i, 100) == 0)) 
                     % Record updated weights
@@ -330,26 +351,18 @@ classdef LDNet < handle
                     else
                         idx = 1:size(X,1);
                     end
-                    acc_tr = self.check_acc(X(idx,:),Y(idx,:));
-%                     Mb = self.get_drop_masks(size(X(idx,:),1),0);
-%                     Ab = self.feedforward(X(idx,:),Mb,Ws);
-%                     mean_acts = [];
-%                     for l=1:(self.layer_count - 1),
-%                         mean_acts = [mean_acts mean(Ab{l},1)];
-%                     end
-%                     plot(mean_acts,'o');
-%                     drawnow();
+                    [l_tr a_tr] = self.check_loss(X(idx,:),Y(idx,:));
                     if (opts.do_validate == 1)
                         if(size(opts.Xv,1) > 1000)
                             idx = randsample(size(opts.Xv,1),1000);
                         else
                             idx = 1:size(opts.Xv,1);
                         end
-                        acc_te = self.check_acc(opts.Xv(idx,:),opts.Yv(idx,:));
-                        fprintf('Round %d, acc_tr: %.4f, acc_te: %.4f\n',...
-                            i, acc_tr, acc_te);
+                        [l_te a_te] = self.check_loss(opts.Xv(idx,:),opts.Yv(idx,:));
+                        fprintf('Round %d, l_tr: %.4f, a_tr: %.4f, l_te: %.4f, a_te: %.4f\n',...
+                            i, l_tr, a_tr, l_te, a_te);
                     else                        
-                        fprintf('Round %d, acc_tr: %.4f\n',i,acc_tr);
+                        fprintf('Round %d, l_tr: %.4f, a_tr: %.4f\n',i,l_tr,a_tr);
                     end
                     fprintf('    Lo: %.4f, Ld: %.4f, Lr: %.4f\n',L(1),L(2),L(3));
                 end
@@ -396,9 +409,9 @@ classdef LDNet < handle
                 end
                 % Package a function handle for use by minFunc
                 if (self.do_dev == 0)
-                    mf_func = @( w ) self.sde_loss_W(w, Xb, Yb, Mb);
+                    mf_func = @( w ) self.sde_loss(w, Xb, Yb, Mb);
                 else
-                    mf_func = @( w ) self.dev_loss_W(...
+                    mf_func = @( w ) self.dev_loss(...
                         w, Xb, Yb, Mb, batch_size, dev_reps);
                 end
                 % Do some learning using minFunc
@@ -408,7 +421,7 @@ classdef LDNet < handle
             return
         end
         
-        function [ L dLdWs ] = sde_loss_W(self, Ws, X, Y, M)
+        function [ L dLdWs ] = sde_loss(self, Ws, X, Y, M)
             % Loss wrapper LDNet training wrt layer parameters.
             %
             return_struct = 1;
@@ -443,7 +456,7 @@ classdef LDNet < handle
             return
         end
         
-        function [ L dLdWs ] = dev_loss_W(self, Ws, X, Y, M, b_size, d_reps)
+        function [ L dLdWs ] = dev_loss(self, Ws, X, Y, M, b_size, d_reps)
             % Loss wrapper LDNet training wrt layer parameters.
             %
             return_struct = 1;
@@ -718,7 +731,7 @@ classdef LDNet < handle
         function [ Xb ] = bias(X, bias_val)
             % Add a column of constant bias to the observations in X
             if ~exist('bias_val','var')
-                bias_val = 1.0;
+                bias_val = 0.1;
             end
             Xb = [X (bias_val * ones(size(X,1),1))];
             return

@@ -2,5 +2,8 @@
 *.m~
 *.fig
 *.swp
-
-.SmoothNet.m.swp
+*.npy
+*.csv
+*.pyc
+*.dat
+*.data

@@ -50,7 +50,7 @@ classdef LDLayer < handle
             end
             Wm = wt_scale * randn(self.dim_output, self.dim_input);
             Wm(:,end) = b_scale;
-            if (do_kill == 10)
+            if (do_kill == 1)
                 for i=1:size(Wm,1),
                     keep_count = 50;
                     if (keep_count < size(Wm,2))
