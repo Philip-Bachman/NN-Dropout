@@ -48,7 +48,7 @@ classdef LDLayer < handle
             if ~exist('do_kill','var')
                 do_kill = 0;
             end
-            Wm = wt_scale * randn(self.dim_output, self.dim_input);
+            Wm = wt_scale * randn(self.dim_output, self.dim_input, 'single');
             Wm(:,end) = b_scale;
             if (do_kill == 1)
                 for i=1:size(Wm,1),
@@ -164,7 +164,7 @@ classdef LDLayer < handle
                 F = max(X, 0);
             else
                 % Do backprop
-                F = double(X > 0);
+                F = single(X > 0);
             end
             return
         end
@@ -181,7 +181,7 @@ classdef LDLayer < handle
             else
                 % Do backprop
                 mask = (X < 0.25) & (X > 1e-10);
-                F = double(X > 0);
+                F = single(X > 0);
                 F(mask) = 2*sqrt(X(mask));
             end
             return
@@ -196,7 +196,7 @@ classdef LDLayer < handle
                 F = X;
             else
                 % Do backprop
-                F = ones(size(X));
+                F = ones(size(X),'single');
             end
             return
         end

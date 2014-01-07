@@ -1,5 +1,6 @@
 import numpy as np
 import numpy.random as npr
+import gnumpy as gp
 import LNFuncs as lnf
 import LNLayer as lnl
 import LNNet as lnn
@@ -12,12 +13,13 @@ if __name__ == '__main__':
     Y = np.load('usps_Y_numpy.npy')
     X = X - np.reshape(np.mean(X,axis=1), (X.shape[0], 1))
     X = X / np.reshape(np.max(np.abs(X),axis=1), (X.shape[0], 1))
-    # Split into random training/test portions
+    # Split into random training/test portions (note: lnf.trte_split() returns
+    # gp.garrays, i.e. arrays on the GPU)
     [Xtr, Ytr, Xte, Yte] = lnf.trte_split(X, Y, 0.8)
     # Configure network layer sizes
     obs_dim = X.shape[1]
     out_dim = Y.shape[1]
-    hidden_size = 300
+    hidden_size = 200
     layer_sizes = [obs_dim, hidden_size, hidden_size, out_dim]
     # Set some training options
     opts = lnf.check_opts()
@@ -43,13 +45,13 @@ if __name__ == '__main__':
     LN.drop_hidden = 0.5
     LN.drop_undrop = 0.2
     # Train first with DEV regularization
-    LN.train(Xtr,Ytr,opts)
-    CL_dev = LN.check_loss(Xte,Yte)
+    #LN.train(Xtr,Ytr,opts)
+    #CL_dev = LN.check_loss(Xte,Yte)
     # Train with standard dropout
-    LN.do_dev = 0
-    LN.init_weights(0.1, 0.01, 1)
-    LN.train(Xtr,Ytr,opts)
-    CL_sde = LN.check_loss(Xte,Yte)
+    #LN.do_dev = 0
+    #LN.init_weights(0.1, 0.01, 1)
+    #LN.train(Xtr,Ytr,opts)
+    #CL_sde = LN.check_loss(Xte,Yte)
     # Train raw, with just L2 regularization
     LN.drop_input = 0.0
     LN.drop_hidden = 0.0

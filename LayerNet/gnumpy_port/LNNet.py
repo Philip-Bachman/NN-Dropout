@@ -1,6 +1,7 @@
-import numpy as np
 from sys import stdout as stdout
+import numpy as np
 import numpy.random as npr
+import gnumpy as gp
 import LNFuncs as lnf
 import LNLayer as lnl
 
@@ -94,6 +95,9 @@ class LNNet:
         parameterizing the LNLayer at self.layers[i].
         """
         for i in range(self.layer_count):
+            if not gp.is_garray(Ws[i]):
+                Ws[i] = gp.garray(Ws[i])
+        for i in range(self.layer_count):
             self.layers[i].set_weights(Ws[i])
         return
 
@@ -105,9 +109,9 @@ class LNNet:
     def vector_weights(self, Ws=[]):
         """Get vectorized form of weights in Ws (or current net weights)."""
         if (len(Ws) == 0):
-            Ws = self.layer_weights
-        Wv = [np.reshape(W, (W.size, 1)) for W in Ws]
-        return np.concatenate(Wv, axis=0)
+            Ws = self.layer_weights()
+        Wv = [W.reshape((W.size, 1)) for W in Ws]
+        return gp.concatenate(Wv, axis=0)
 
     def get_drop_masks(self, mask_count, in_drop=0, hd_drop=0):
         """Get mask_count dropout masks shaped for each layer in self.layers.
@@ -119,7 +123,7 @@ class LNNet:
         """
         M = []
         # Generate an 'undrop' mask, which sets some masks to be dropless
-        u_mask = np.float32((npr.rand(mask_count,1) < self.drop_undrop))
+        u_mask = (gp.rand(mask_count,1) < self.drop_undrop)
         for i in range(self.layer_count):
             # Set drop_rate based on layer and in_drop/hd_drop
             drop_rate = 0.0
@@ -130,20 +134,24 @@ class LNNet:
             # Get mask dimension for this layer
             mask_dim = self.layers[i].dim_input
             # Generate random 'bit' mask
-            d_mask = np.float32((npr.rand(mask_count, mask_dim) > drop_rate))
+            d_mask = (gp.rand(mask_count, mask_dim) > drop_rate)
             # Compute bootleg 'or' with the undrop mask
-            mask = np.float32(((d_mask + u_mask) > 0.1))
+            mask = ((d_mask + u_mask) > 0.1)
             # Rescale mask entries to have unit mean
-            scales = np.reshape((1.0 / np.mean(mask,axis=1)), (mask_count,1))
-            mask = np.float32(mask * scales)
+            scales = 1.0 / gp.mean(mask, axis=1)
+            scales = scales[:,gp.newaxis]
+            mask = mask * scales
             # Record the generated mask
             M.append(mask)
         return M
 
-    def feedforward(self, X, M, Ws=[]):
+    def feedforward(self, X, M=[], Ws=[]):
         """Feedforward for inputs X with drop masks M and layer weights Ws."""
+        if (len(M) == 0):
+            # If no masks are given, use drop-free feedforward
+            M = self.get_drop_masks(X.shape[0],0,0)
         if (len(Ws) == 0):
-            # Default to this network's currrnt per-layer weights
+            # Default to this network's current per-layer weights
             Ws = self.layer_weights()
         A = []
         for i in range(self.layer_count):
@@ -201,7 +209,7 @@ class LNNet:
         L = 0.0
         dLdWs = []
         for i in range(self.layer_count):
-            L = L + (self.lam_l2 * np.sum(Ws[i]**2.0))
+            L = L + (self.lam_l2 * gp.sum(Ws[i]**2.0))
             dLdWs.append((2.0 * self.lam_l2) * Ws[i])
         return {'L': L, 'dLdWs': dLdWs}
 
@@ -219,7 +227,7 @@ class LNNet:
         # Compute loss and gradient for output-layer activations
         O = self.out_loss(A[-1], Y)
         # Make list of activation gradients
-        dLdA = [np.zeros(Ai.shape, dtype=np.float32) for Ai in A]
+        dLdA = [gp.zeros(Ai.shape) for Ai in A]
         dLdA[-1] = O['dL']
         # Backprop the output loss gradient through network
         B = self.backprop(dLdA, A, X, M, Ws)
@@ -253,7 +261,7 @@ class LNNet:
         # (should be) drop free feedforward of X[0].
         O = self.out_loss(A[0][-1], Y)
         # Make list of activation gradients
-        dLdA = [[np.zeros(Aj.shape, dtype=np.float32) for Aj in A[0]] \
+        dLdA = [[gp.zeros(Aj.shape) for Aj in A[0]] \
                 for i in range(dev_reps)]
         dLdA[0][-1] = O['dL']
         # Compute DEV regularizer loss and gradients
@@ -268,7 +276,7 @@ class LNNet:
                 for j in range(dev_reps):
                     dLdA[j][i] = dLdA[j][i] + (dev_lam * Di['dLdA'][j])
         # Backpropagate gradients for each DEV rep
-        B = {'dLdWs': [np.zeros(W.shape, dtype=np.float32) for W in Ws]}
+        B = {'dLdWs': [gp.zeros(W.shape) for W in Ws]}
         for i in range(dev_reps):
             Bi = self.backprop(dLdA[i], A[i], X[i], M[i], Ws)
             for j in range(self.layer_count):
@@ -303,11 +311,18 @@ class LNNet:
         rounds = opts['rounds']
         # Get initial weights, and an initial set of momentus updates
         Ws = self.layer_weights()
-        dLdWs_mom = [np.zeros(W.shape, dtype=np.float32) for W in Ws]
+        self.set_weights(Ws)
+        dLdWs_mom = [gp.zeros(W.shape) for W in Ws]
+        # Get arrays for holding training batches and batches for loss
+        # checking on the training set.
+        Xb = gp.zeros((batch_size, X.shape[1]))
+        Yb = gp.zeros((batch_size, Y.shape[1]))
+        Xv = gp.zeros((min(X.shape[0],2000), X.shape[1]))
+        Yv = gp.zeros((min(Y.shape[0],2000), Y.shape[1]))
         # Loop-da-loop
         for i in range(rounds):
             # Grab a minibatch of training examples
-            [Xb, Yb] = lnf.sample_obs(X, Y, batch_size)
+            lnf.sample_obs(X, Y, Xb, Yb)
             if (self.do_dev == 1):
                 # Make lists of inputs and drop masks for DEV regularization
                 Xb_a = [Xb for j in range(dev_reps)]
@@ -334,14 +349,22 @@ class LNNet:
             # Give some feedback, to quell impatience and fidgeting
             if ((i == 0) or (((i + 1) % 200) == 0)):
                 self.set_weights(Ws)
-                [Xv, Yv] = lnf.sample_obs(X, Y, 2000)
+                lnf.sample_obs(X, Y, Xv, Yv)
                 CL_tr = self.check_loss(Xv, Yv)
                 print 'Round {0:6d}:'.format((i + 1))
                 print ' Lo: {0:.4f}, Ld: {1:.4f}, Lr: {2:.4f}'.format(\
                         loss_info['L'][0],loss_info['L'][1],loss_info['L'][2])
+                v_sizes = [75, 100, 111, 112, 120, 150, 200, 500, 1000, 2000]
+                Xv = gp.zeros((max(v_sizes), X.shape[1]))
+                Yv = gp.zeros((max(v_sizes), Y.shape[1]))
+                lnf.sample_obs(X, Y, Xv, Yv)
+                for v in v_sizes:
+                    CL_v = self.check_loss(Xv[:v,:], Yv[:v,:])
+                    print ' {0:4d}: {1:.4f}'.format(v, CL_v['loss'])
                 if (opts['do_validate'] == 1):
                     # Compute accuracy on validation set
-                    CL_te = self.check_loss(opts['Xv'], opts['Yv'])
+                    lnf.sample_obs(opts['Xv'], opts['Yv'], Xv, Yv)
+                    CL_te = self.check_loss(Xv, Yv)
                     print '    Atr: {0:.4f}, Ltr: {1:.4f}, Ate: {2:.4f}, Lte: {3:.4f}'.\
                             format(CL_tr['acc'], CL_tr['loss'], CL_te['acc'], CL_te['loss'])
                 else:
@@ -364,8 +387,8 @@ if __name__ == '__main__':
     hidden_size = 500
     layer_sizes = [obs_dim, hidden_size, hidden_size, out_dim]
     # Generate dummy training data
-    X = np.float32(npr.randn(obs_count, obs_dim))
-    Y = np.float32(npr.randn(obs_count, out_dim))
+    X = gp.randn((obs_count, obs_dim))
+    Y = gp.randn((obs_count, out_dim))
     # Get some training options
     opts = lnf.check_opts()
     opts['rounds'] = 101
