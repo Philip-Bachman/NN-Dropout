@@ -3,6 +3,24 @@ classdef RecSys < handle
     
     methods (Static = true)
         
+        function [ Itr Jtr Ktr Ite Jte Kte Rtr Rte ] = load_ml_100k( split_num )
+            % Load the official MovieLens 100k train/test split 'split_num'.
+            %
+            % This also provides matrices containing the train/test data, with
+            % zeros corresponding to unobserved values (i.e. non-ratings).
+            %
+            if ~exist('split_num','var')
+                split_num = randi(5);
+            end
+            f_name = sprintf('ml_100k_s%d.mat',split_num);
+            load(f_name);
+            row_count = max([Itr; Ite]);
+            col_count = max([Jtr; Jte]);
+            Rtr = sparse(Itr, Jtr, Ktr, row_count, col_count);
+            Rte = sparse(Ite, Jte, Kte, row_count, col_count);
+            return
+        end
+        
         function [ Itr Jtr Ktr Ite Jte Kte Rtr Rte ] = ...
                 trte_split(I, J, K, tr_frac)
             % Split the user/item/rating tuples (I(i),J(i),K(i)) into training

@@ -188,17 +188,23 @@ classdef LDNet < handle
             u_mask = (rand(mask_count,1) < self.drop_undrop);
             for i=1:self.layer_count,
                 if (i == 1)
-                    drop_rate = self.drop_input;
+                    %drop_rate = self.drop_input;
+                    drop_rate = 0.2;
                 else
-                    drop_rate = self.drop_hidden;
+                    %drop_rate = self.drop_hidden;
+                    drop_rate = 0.5;
+                    
                 end
                 mask_dim = self.layers{i}.dim_input;
                 d_mask = (rand(mask_count,mask_dim) > drop_rate);
-                M{i} = bsxfun(@or, d_mask, u_mask);
-                M{i} = single(bsxfun(@times, M{i}, 1 ./ mean(M{i},2)));
+                M{i} = single(d_mask);
+                %M{i} = bsxfun(@or, d_mask, u_mask);
+                %M{i} = single(bsxfun(@times, M{i}, 1 ./ mean(M{i},2)));
                 if (no_drop == 1)
-                    M{i} = ones(size(M{i}),'single');
+                    %M{i} = ones(size(M{i}),'single');
+                    M{i} = M{i} * (1 / drop_rate);
                 end
+                M{i}(:,end) = 1;
             end
             return
         end
@@ -307,6 +313,9 @@ classdef LDNet < handle
             for i=1:self.layer_count,
                 dLdWs_mom(i).W = zeros(size(Ws(i).W),'single');
             end
+            update_norms = zeros(1, rounds);
+            fig1 = figure();
+            fig2 = figure();
             for i=1:rounds,
                 % Grab a batch of training samples
                 if (batch_size < size(X,1))
@@ -340,27 +349,32 @@ classdef LDNet < handle
                         ((1-momentum) * dLdWs(l).W);
                     % Update weight vector
                     Ws(l).W = Ws(l).W - (gentle_rate * dLdWs_mom(l).W);
+                    update_norms(i) = update_norms(i) + ...
+                        (gentle_rate * sum(sum(dLdWs_mom(l).W(:).^2)));
                 end
                 rate = rate * decay;
                 % Bound weights
                 for l=1:self.layer_count,
                     Ws(l).W = self.layers{l}.bound_weights(Ws(l).W,self.wt_bnd);
                 end
-                if ((i == 1) || (mod(i, 100) == 0)) 
+                if ((i == 1) || (mod(i, 25) == 0)) 
                     % Record updated weights
                     self.set_weights(Ws);
+                    figure(fig1);
                     draw_usps_filters(Ws(1).W,36,1,1,gcf());
+                    figure(fig2);
+                    plot(1:i, update_norms(1:i));
                     drawnow();
                     % Check accuracy with updated weights
-                    if (size(X,1) > 1000)
-                        idx = randsample(size(X,1),1000);
+                    if (size(X,1) > 500)
+                        idx = randsample(size(X,1),500);
                     else
                         idx = 1:size(X,1);
                     end
                     [l_tr a_tr] = self.check_loss(X(idx,:),Y(idx,:));
                     if (opts.do_validate == 1)
-                        if(size(opts.Xv,1) > 1000)
-                            idx = randsample(size(opts.Xv,1),1000);
+                        if(size(opts.Xv,1) > 500)
+                            idx = randsample(size(opts.Xv,1),500);
                         else
                             idx = 1:size(opts.Xv,1);
                         end
@@ -780,13 +794,17 @@ classdef LDNet < handle
             % Compute a multiclass logistic regression loss and its gradients,
             % w.r.t. the proposed outputs Yh, given the true values Y.
             %
+            Yh = double(Yh);
+            Y = double(Y);
             obs_count = size(Yh,1);
             cl_count = size(Y,2);
             [Y_max Y_idx] = max(Y,[],2);
+            Yh = max(-15, min(15, Yh));
             P = bsxfun(@rdivide, exp(Yh), sum(exp(Yh),2));
             % Compute classification loss (deviance)
             p_idx = sub2ind(size(P), (1:obs_count)', Y_idx);
             L = -sum(sum(log(P(p_idx)))) / obs_count;
+            L = single(L);
             if (nargout > 1)
                 % Make a binary class indicator matrix
                 Yi = bsxfun(@eq, Y_idx, 1:cl_count);
