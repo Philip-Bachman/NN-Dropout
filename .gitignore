@@ -7,3 +7,5 @@
 *.pyc
 *.dat
 *.data
+*.npz
+*.pkl
