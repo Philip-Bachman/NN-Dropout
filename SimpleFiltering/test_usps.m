@@ -10,8 +10,8 @@ rand_accs = zeros(1,test_count);
 
 for i=1:test_count,
     [Xtr Ytr Xte Yte] = trte_split(X, Y, train_frac);
-    SF = SimpleFilter(1,@SimpleFilter.actfun_rehu);
-    [opts W] = SF.train(Xtr, 512, train_rounds, 1);
+    SF = SimpleFilter(5,@SimpleFilter.actfun_rehu);
+    [opts W] = SF.train(Xtr, 512, train_rounds, 1, 1);
     % Test first with learned filters
     Ftr = SF.evaluate(Xtr);
     Fte = SF.evaluate(Xte);

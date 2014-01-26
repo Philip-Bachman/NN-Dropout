@@ -29,6 +29,7 @@ classdef SimpleFilter < handle
         %   2: Sparse filtering, following Ngiam et. al, NIPS 2011
         %   3: Reconstruction ICA, following Le et. al, NIPS 2011
         %   4: Sparse autoencoder
+        %   5: K-sparse filtering, another new method
         %
     end % END PROPERTIES
     
@@ -51,6 +52,8 @@ classdef SimpleFilter < handle
                         afun = @SimpleFilter.actfun_soft_relu;
                     case 4
                         afun = @SimpleFilter.actfun_soft_relu;
+                    case 5
+                        afun = @SimpleFilter.actfun_soft_abs;
                     otherwise
                         error('Invalid self.filter_method.');
                 end
@@ -74,6 +77,9 @@ classdef SimpleFilter < handle
                 case 4
                     self.obj_func = @SimpleFilter.of_spae;
                     self.feedforward = @SimpleFilter.ff_spae;
+                case 5
+                    self.obj_func = @SimpleFilter.of_kspar_filter;
+                    self.feedforward = @SimpleFilter.ff_kspar_filter;
                 otherwise
                     error('Invalid self.filter_method.');
             end
@@ -226,7 +232,7 @@ classdef SimpleFilter < handle
             % Initialize filters as desired (or if previously uninitialized)
             if ((reset_filters == 1) || (numel(self.filters) == 0))
                 W = self.init_filters(X, N, opts.init_kmeans);
-                if (self.filter_method == 1)
+                if ((self.filter_method == 1) || (self.filter_method == 5))
                     % For methods with dispersion objectives, rescale W
                     W = self.weight_scale(W, X, opts.avg_act, 1);
                 else
@@ -247,7 +253,7 @@ classdef SimpleFilter < handle
             % Set options for minFunc to reasonable values
             mf_opts = struct();
             mf_opts.Display = 'iter';
-            mf_opts.Method = 'lbfgs';
+            mf_opts.Method = 'sd';
             mf_opts.optTol = 1e-8;
             mf_opts.Corr = 10;
             mf_opts.Damped = 1;
@@ -494,7 +500,102 @@ classdef SimpleFilter < handle
             return
         end
         
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        % K-SPARSE FILTERING FUNCTIONS %
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
         
+        function [ L dW ] = of_kspar_filter(W, X, N, afun, opts)
+            % Reshape W into matrix form
+            W = reshape(W, N, size(X,2));
+            if (nargout == 1)
+                L = SimpleFilter.bp_kspar_filter(X, W, afun, opts);
+            else
+                [L dW] = SimpleFilter.bp_kspar_filter(X, W, afun, opts);
+                dW = dW(:);
+            end
+            return
+        end
+        
+        function [ F bp_dFdW ] = ff_kspar_filter(X, W, afun)
+            [F bp_dFdW] = afun(X, W);
+            return
+        end
+        
+        function [ L dLdW ] = bp_kspar_filter(X, W, afun, opts)
+            o_count = size(X,1);
+            f_count = size(W,1);
+            lam_Sr = opts.lam_S / o_count;
+            lam_Sc = opts.lam_S / (10*f_count);
+            lam_D = opts.lam_D / o_count;
+            k_spar = round(f_count / 10);
+            lam_E = opts.en_opts.lam;
+            lam_B = 1e-4;
+            avg_act = opts.avg_act;
+            %%%%%%%%%%%%%%%%%%%%%
+            % Loss computations %
+            %%%%%%%%%%%%%%%%%%%%%
+            % Feedforward
+            [F1 bp_dF1dW] = SimpleFilter.ff_kspar_filter(X, W, afun);
+            % Compute row-wise sparsity
+            [Fr bp_Fr] = SimpleFilter.norm_rows(F1);
+            Sr = sum(sum(Fr));
+            % Compute column-wise sparsity
+            [Fc bp_Fc] = SimpleFilter.norm_cols(F1);
+            Sc = sum(sum(Fc));
+            % Compute row-wise k-sparsity penalty
+            Fs = sort(F1,2,'descend');
+            Fs_mask = double(bsxfun(@ge, F1, Fs(:,k_spar)));
+            Fs = sort(F1,1,'descend');
+            Fs_mask = Fs_mask + ...
+                double(bsxfun(@ge, F1, Fs(10,:)));
+            D = -sum(sum((F1 .* Fs_mask)));
+            % Compute Tikhonovy Elastic Net loss/gradient on weights
+            [Le dEdW] = SimpleFilter.reg_elnet(W, opts.en_opts);
+            % Compute babel function loss/gradient on weights
+            [Lb dBdW] = SimpleFilter.babel_loss(W, 1);
+            % Combine losses, like communists
+            L = lam_Sr*Sr + lam_Sc*Sc + lam_D*D + lam_E*Le + lam_B*Lb;
+            %%%%%%%%%%%%%%%%%%%%%%%%%
+            % Gradient computations %
+            %%%%%%%%%%%%%%%%%%%%%%%%%
+            % Compute gradient due to sparsity penalty
+            dSdF1 = bp_Fr(lam_Sr*ones(size(Fr))) + bp_Fc(lam_Sc*ones(size(Fc)));
+            % Compute gradient due to row-wise k-sparsity penalty
+            dDdF1 = -(lam_D * Fs_mask);
+            % Combine gradients
+            dLdW = bp_dF1dW((dSdF1 + dDdF1), X) + lam_E*dEdW + lam_B*dBdW;
+            %%%%%%%%%%%%%%%
+            % Diagnostics %
+            %%%%%%%%%%%%%%%
+            % Textual
+            fprintf('          Sr: %.6f, Sc: %.6f, D: %.6f, Le: %.6f, Lb: %.6f\n',...
+                lam_Sr*Sr, lam_Sc*Sc, lam_D*D, lam_E*Le, lam_B*Lb);
+            % Visual
+            subplot(6,4,[1 2 3 4 5 6 7 8]);
+            cla;
+            hold on;
+            plot(sum(F1.^2,1)./o_count,'o');
+            plot(1:f_count,(avg_act^2 * ones(1,f_count)),'r--');
+            ylim([0 2*(avg_act^2)]);
+            xlim([0 f_count+1]);
+            Wi = W(:,1:(end-1));
+            dim = sqrt(size(Wi,2));
+            if (abs(round(dim) - dim) > 1e-10)
+                sq_val = (floor(dim) + 1)^2;
+                Wi = [Wi zeros(size(Wi,1),(sq_val-size(Wi,2)))];
+            end
+            dim = round(sqrt(size(Wi,2)));
+            for j=1:16,
+                subplot(6,4,8+j);
+                cla;
+                imagesc(reshape(Wi(j,:),dim,dim)');
+                set(gca,'xtick',[],'ytick',[]);
+                axis square;
+                colormap('gray');
+            end
+            drawnow();
+            return
+        end
         
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
         % SPARSE FILTERING FUNCTIONS %
@@ -1048,6 +1149,17 @@ classdef SimpleFilter < handle
                     % Check options for Sparse Autoencoder
                     if ~isfield(opts,'lam_S')
                         opts.lam_S = 0.1;
+                    end
+                    if ~isfield(opts,'avg_act')
+                        opts.avg_act = 0.1;
+                    end
+                case 5
+                    % Check options for k-sparse filtering
+                    if ~isfield(opts,'lam_S')
+                        opts.lam_S = 1e-2;
+                    end
+                    if ~isfield(opts,'lam_D')
+                        opts.lam_D = 1e-2;
                     end
                     if ~isfield(opts,'avg_act')
                         opts.avg_act = 0.1;

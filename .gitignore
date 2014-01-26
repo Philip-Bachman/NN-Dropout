@@ -4,8 +4,10 @@
 *.swp
 *.npy
 *.csv
-*.pyc
 *.dat
 *.data
 *.npz
 *.pkl
+*.pkl.gz
+*.png
+*.pyc

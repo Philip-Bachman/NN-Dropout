@@ -100,6 +100,7 @@ class DEV_MLP(object):
         dev_clones = params['dev_clones']
         use_bias = params['use_bias']
         dev_types = params['dev_types']
+        dev_lams_as_numbers = [a for a in params['dev_lams']]
         dev_lams = np.asarray(params['dev_lams'], dtype=theano.config.floatX)
         dev_lams = theano.shared(value=dev_lams, name='dev_lams')
         # Make a dict to tell which parameters are norm-boundable
@@ -164,14 +165,22 @@ class DEV_MLP(object):
         self.dev_reg_loss = (self.raw_reg_loss + self.sde_reg_loss) / 2.0
         self.dev_dev_loss = self.dev_loss(dev_types, dev_lams)
         self.dev_errors = self.raw_errors
+        if (sum(dev_lams_as_numbers) < 1e-5):
+            # When all dev_lams are 0 (ish), just switch to standard SGD
+            self.dev_reg_loss = self.raw_reg_loss
+            self.dev_dev_loss = T.sum(dev_lams)
 
     def dev_loss(self, dev_types=[], dev_lams=[]):
-        """Compute Dropout Ensemble Variance regularizer term."""
-        tanh_fun = lambda x: T.tanh(x)
-        norm_fun = lambda x: (x / T.sqrt(T.sum(x**2.0,axis=1,keepdims=1) + 1e-6))
         var_fun = lambda x1, x2: T.sum((x1 - x2)**2.0) / x1.shape[0]
+        tanh_fun = lambda x1, x2: var_fun(T.tanh(x1), T.tanh(x2))
+        norm_fun = lambda x1, x2: var_fun( \
+                (x1 / T.sqrt(T.sum(x1**2.0,axis=1,keepdims=1) + 1e-6)), \
+                (x2 / T.sqrt(T.sum(x2**2.0,axis=1,keepdims=1) + 1e-6)))
+        sigm_fun = lambda x1, x2: var_fun(T.nnet.sigmoid(x1), T.nnet.sigmoid(x2))
+        cent_fun = lambda xt, xo: T.sum(T.nnet.binary_crossentropy( \
+                T.nnet.sigmoid(xo), T.nnet.sigmoid(xt))) / xt.shape[0]
         L = 0.0
-        for i in range(self.layer_count):
+        for i in xrange(self.layer_count):
             if (i < (self.layer_count - 1)):
                 x1 = self.layers[i].output
                 x2 = self.drop_nets[0][i].output
@@ -179,9 +188,13 @@ class DEV_MLP(object):
                 x1 = self.layers[i].linear_output
                 x2 = self.drop_nets[0][i].linear_output
             if (dev_types[i] == 1):
-                L = L + (dev_lams[i] * var_fun(norm_fun(x1), norm_fun(x2)))
+                L = L + (dev_lams[i] * norm_fun(x1, x2))
             elif (dev_types[i] == 2):
-                L = L + (dev_lams[i] * var_fun(tanh_fun(x1), tanh_fun(x2)))
+                L = L + (dev_lams[i] * tanh_fun(x1, x2))
+            elif (dev_types[i] == 3):
+                L = L + (dev_lams[i] * sigm_fun(x1, x2))
+            elif (dev_types[i] == 4):
+                L = L + (dev_lams[i] * cent_fun(x1, x2))
             else:
                 L = L + (dev_lams[i] * var_fun(x1, x2))
         return L
@@ -190,8 +203,7 @@ class DEV_MLP(object):
 def test_mlp(
         mlp_params,
         sgd_params,
-        dataset,
-        results_file_name):
+        dataset):
     """
     The dataset is the one from the mlp demo on deeplearning.net.  This training
     function is lifted from there almost exactly.
@@ -207,6 +219,9 @@ def test_mlp(
     batch_size = sgd_params['batch_size']
     mlp_type = sgd_params['mlp_type']
     wt_norm_bound = sgd_params['wt_norm_bound']
+    result_tag = sgd_params['result_tag']
+    txt_file_name = "results_{0}.txt".format(result_tag)
+    img_file_name = "weights_{0}.png".format(result_tag)
 
     datasets = load_mnist(dataset)
     train_set_x, train_set_y = datasets[0]
@@ -235,13 +250,14 @@ def test_mlp(
     learning_rate = theano.shared(np.asarray(initial_learning_rate,
         dtype=theano.config.floatX))
 
-    rng = np.random.RandomState(1234)
+    rng = np.random.RandomState(12345)
 
     # construct the MLP class
     NET = DEV_MLP(rng=rng, input=x, params=mlp_params)
 
-    # Build the expressions for the cost functions.
-    raw_cost = NET.raw_class_loss(y) + NET.raw_reg_loss
+    # Build the expressions for the cost functions. If training without SDE or
+    # DEV regularization, the DEV loss/cost will be used, but the weights for
+    # DEV regularization on each layer will be set to 0 before training.
     sde_cost = NET.sde_class_loss(y) + NET.sde_reg_loss
     dev_cost = 0.5 * (NET.dev_class_loss(y) + NET.dev_dev_loss) + NET.dev_reg_loss
     NET_metrics = [NET.raw_errors(y), NET.raw_class_loss(y), NET.dev_dev_loss, NET.raw_reg_loss]
@@ -352,7 +368,12 @@ def test_mlp(
     epoch_counter = 0
     start_time = time.clock()
 
-    results_file = open(results_file_name, 'wb')
+    results_file = open(txt_file_name, 'wb')
+    results_file.write("mlp_type: {0}\n".format(mlp_type))
+    results_file.write("lam_l2a: {0:.4f}\n".format(mlp_params['lam_l2a']))
+    results_file.write("dev_types: {0}\n".format(str(mlp_params['dev_types'])))
+    results_file.write("dev_lams: {0}\n".format(str(mlp_params['dev_lams'])))
+    results_file.flush()
 
     e_time = time.clock()
     epoch_metrics = train_sde(1, 1)
@@ -360,7 +381,7 @@ def test_mlp(
         # Train this epoch
         epoch_counter = epoch_counter + 1
         for minibatch_index in xrange(n_train_batches):
-            if ((epoch_counter <= 1) or (mlp_type == 'sde')):
+            if ((epoch_counter <= 0) or (mlp_type == 'sde')):
                 batch_metrics = train_sde(epoch_counter, minibatch_index)
             else:
                 batch_metrics = train_dev(epoch_counter, minibatch_index)
@@ -372,9 +393,10 @@ def test_mlp(
 
         # Report and save progress.
         epoch_metrics = [(float(v) / float(n_train_batches)) for v in epoch_metrics]
+        tag = (" **" if (this_validation_errors < best_validation_errors) else " ")
         print "epoch {0}: t_err={1:.2f}, t_loss={2:.4f}, t_dev={3:.4f}, t_reg={4:.4f}, v_err={5:d}{6}".format( \
                 epoch_counter, epoch_metrics[0], epoch_metrics[1], epoch_metrics[2], epoch_metrics[3], \
-                this_validation_errors, (" **" if this_validation_errors < best_validation_errors else ""))
+                int(this_validation_errors), tag)
         print "--time: {0:.4f}".format((time.clock() - e_time))
         epoch_metrics = [0.0 for v in epoch_metrics]
         e_time = time.clock()
@@ -386,7 +408,7 @@ def test_mlp(
         new_learning_rate = set_learning_rate()
 
         # Save first layer weights to an image locally
-        utils.visualize(NET, 0, 'net_weights.png')
+        utils.visualize(NET, 0, img_file_name)
 
     end_time = time.clock()
 
@@ -408,41 +430,41 @@ if __name__ == '__main__':
     sgd_params['start_rate'] = 0.25
     sgd_params['decay_rate'] = 0.998
     sgd_params['wt_norm_bound'] = 3.75
-    sgd_params['epochs'] = 3000
+    sgd_params['epochs'] = 1000
     sgd_params['batch_size'] = 100
     # Set parameters for the network to be trained
     mlp_params = {}
-    mlp_params['layer_sizes'] = [28*28, 500, 500, 10]
-    mlp_params['lam_l2a'] = 5e-2
+    mlp_params['layer_sizes'] = [28*28, 800, 800, 10]
+    mlp_params['lam_l2a'] = 1e-2
     mlp_params['dev_clones'] = 1
     mlp_params['dev_types'] = [1, 1, 2]
-    mlp_params['dev_lams'] = [0.1, 0.1, 1.0]
+    mlp_params['dev_lams'] = [0.1, 0.1, 2.0]
     mlp_params['use_bias'] = 1
     # Pick a some data to train with
     dataset = 'data/mnist_batches.npz'
     #dataset = 'data/mnist.pkl'
 
     # Set the type of network to train, based on user input
-    if len(sys.argv) < 2:
-        print "Usage: {0} [raw|sde|dev]".format(sys.argv[0])
+    if (len(sys.argv) != 3):
+        print "Usage: {0} [raw|sde|dev] [result_tag]".format(sys.argv[0])
         exit(1)
     elif sys.argv[1] == "raw":
         sgd_params['mlp_type'] = 'raw'
-        results_file_name = "results_raw.txt"
+        sgd_params['result_tag'] = sys.argv[2]
+        mlp_params['dev_lams'] = [0.0 for l in mlp_params['dev_lams']]
     elif sys.argv[1] == "sde":
         sgd_params['mlp_type'] = 'sde'
-        results_file_name = "results_sde.txt"
+        sgd_params['result_tag'] = sys.argv[2]
     elif sys.argv[1] == "dev":
         sgd_params['mlp_type'] = 'dev'
-        results_file_name = "results_dev.txt"
+        sgd_params['result_tag'] = sys.argv[2]
     else:
         print "I don't know how to '{0}'".format(sys.argv[1])
         exit(1)
 
     test_mlp(mlp_params=mlp_params, \
             sgd_params=sgd_params, \
-            dataset=dataset, \
-            results_file_name=results_file_name)
+            dataset=dataset) 
 
 
 
