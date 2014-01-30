@@ -664,6 +664,7 @@ classdef SimpleFilter < handle
         function [ L dLdW ] = bp_rica(X, W, afun, opts)
             lam_S = opts.lam_S / size(X,1);
             lam_E = opts.en_opts.lam;
+            obs_count = size(X,1);
             % Feedforward
             [W bp_W] = SimpleFilter.norm_rows(W);
             Xw = W*X';
@@ -745,8 +746,8 @@ classdef SimpleFilter < handle
                 Wi = [Wi zeros(size(Wi,1),(sq_val-size(Wi,2)))];
             end
             dim = round(sqrt(size(Wi,2)));
-            for j=1:16,
-                subplot(6,4,8+j);
+            for j=1:25,
+                subplot(5,5,j);
                 cla;
                 imagesc(reshape(Wi(j,:),dim,dim)');
                 set(gca,'xtick',[],'ytick',[]);
