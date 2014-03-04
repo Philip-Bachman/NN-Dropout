@@ -71,6 +71,17 @@ def norm_trans(X, mode='ff'):
         F = (X['dLdA'] / N) - (X['A'] * (V / (N**2.0)))
     return F
 
+def kspr_trans(X, mode='ff', k=25):
+    """Compute feedforward and backprop for k-sparse activation."""
+    if (mode == 'ff'):
+        X_abs = abs(X)
+        X_abs.sort(axis=1)
+        thresh = X_abs[:,-k].reshape((X.shape[0],1))
+        F = X * (abs(X) >= thresh)
+    if (mode == 'bp'):
+        F = (abs(X['A']) > 0) * X['dLdA']
+    return F
+
 ###############################################################################
 # The function below computes the Dropout Ensemble Variance loss and its      #
 # gradients. The DEV regularizer penalizes variance in the activations of the #

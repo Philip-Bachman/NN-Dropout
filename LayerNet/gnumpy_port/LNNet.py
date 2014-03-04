@@ -320,9 +320,16 @@ class LNNet:
         Xv = gp.zeros((min(X.shape[0],2000), X.shape[1]))
         Yv = gp.zeros((min(Y.shape[0],2000), Y.shape[1]))
         # Loop-da-loop
+        b_start = 0
         for i in range(rounds):
             # Grab a minibatch of training examples
-            lnf.sample_obs(X, Y, Xb, Yb)
+            b_end = b_start + batch_size
+            if (b_end >= X.shape[0]):
+                b_start = 0
+                b_end = b_start + batch_size
+            Xb = X[b_start:b_end,:]
+            Yb = Y[b_start:b_end,:]
+            b_start = b_end
             if (self.do_dev == 1):
                 # Make lists of inputs and drop masks for DEV regularization
                 Xb_a = [Xb for j in range(dev_reps)]
@@ -354,13 +361,6 @@ class LNNet:
                 print 'Round {0:6d}:'.format((i + 1))
                 print ' Lo: {0:.4f}, Ld: {1:.4f}, Lr: {2:.4f}'.format(\
                         loss_info['L'][0],loss_info['L'][1],loss_info['L'][2])
-                v_sizes = [75, 100, 111, 112, 120, 150, 200, 500, 1000, 2000]
-                Xv = gp.zeros((max(v_sizes), X.shape[1]))
-                Yv = gp.zeros((max(v_sizes), Y.shape[1]))
-                lnf.sample_obs(X, Y, Xv, Yv)
-                for v in v_sizes:
-                    CL_v = self.check_loss(Xv[:v,:], Yv[:v,:])
-                    print ' {0:4d}: {1:.4f}'.format(v, CL_v['loss'])
                 if (opts['do_validate'] == 1):
                     # Compute accuracy on validation set
                     lnf.sample_obs(opts['Xv'], opts['Yv'], Xv, Yv)
@@ -384,18 +384,18 @@ if __name__ == '__main__':
     obs_dim = 784
     out_dim = 10
     obs_count = 10000
-    hidden_size = 500
+    hidden_size = 250
     layer_sizes = [obs_dim, hidden_size, hidden_size, out_dim]
     # Generate dummy training data
     X = gp.randn((obs_count, obs_dim))
     Y = gp.randn((obs_count, out_dim))
     # Get some training options
     opts = lnf.check_opts()
-    opts['rounds'] = 101
+    opts['rounds'] = 201
     opts['batch_size'] = 100
     opts['dev_reps'] = 2
     # Train a network (on BS data)
-    LN = LNNet(layer_sizes, lnf.tanh_trans, lnf.loss_lsq)
+    LN = LNNet(layer_sizes, lnf.kspr_trans, lnf.loss_lsq)
     LN.do_dev = 1
     LN.dev_lams = [1.0 for i in range(LN.layer_count)]
     # Time training

@@ -670,6 +670,7 @@ classdef SimpleFilter < handle
             Xw = W*X';
             % Compute reconstruction residual and loss
             WtWx_x = W'*Xw - X';
+            % WtWx_x = (W' * (W * X')) - X'
             Lr = sum(sum(WtWx_x.^2)) / obs_count;
             % Compute sparsity loss
             [Xn bp_Xn] = SimpleFilter.norm_cols(Xw);

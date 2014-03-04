@@ -1,3 +1,7 @@
+##########################################################
+# Semi-supervised DEV-regularized multilayer perceptron. #
+##########################################################
+
 import numpy as np
 import cPickle
 import gzip
@@ -13,8 +17,8 @@ import theano.printing
 import theano.tensor.shared_randomstreams
 
 import utils as utils
-from output_losses import LogisticRegression, MCL2Hinge
-from load_data import load_umontreal_data, load_mnist
+from output_losses import MCL2HingeSS
+from load_data import load_udm_ss
 
 
 class HiddenLayer(object):
@@ -31,7 +35,7 @@ class HiddenLayer(object):
             W = theano.shared(value=W_values, name='W')
 
         if b is None:
-            b_values = np.zeros((n_out,), dtype=theano.config.floatX) + 0.001
+            b_values = np.zeros((n_out,), dtype=theano.config.floatX) + 0.1
             b = theano.shared(value=b_values, name='b')
 
         self.W = W
@@ -63,7 +67,7 @@ def _dropout_from_layer(rng, layer, p):
     """p is the probablity of dropping a unit
     """
     srng = theano.tensor.shared_randomstreams.RandomStreams(
-            rng.randint(999999))
+            rng.randint(100000))
     # p=1-p because 1's indicate keep and p is prob of dropping
     mask = srng.binomial(n=1, p=1-p, size=layer.shape)
     # The cast is important because
@@ -81,7 +85,7 @@ class DropoutHiddenLayer(HiddenLayer):
         self.output = _dropout_from_layer(rng, undropped_output, p=0.5)
 
 
-class DEV_MLP(object):
+class SS_DEV_MLP(object):
     """A multipurpose layer-based feedforward net.
 
     This class is capable of standard backprop training, training with
@@ -95,6 +99,7 @@ class DEV_MLP(object):
         # Setup simple activation function for this net
         rectified_linear_activation = lambda x: T.maximum(0.0, x)
         # Grab some of the parameters for this net
+        ss_ratio = params['ss_ratio']
         layer_sizes = params['layer_sizes']
         lam_l2a = params['lam_l2a']
         dev_clones = params['dev_clones']
@@ -146,14 +151,14 @@ class DEV_MLP(object):
 
         # Use the negative log likelihood of the logistic regression layer of
         # the first DEV clone as dropout optimization objective.
-        self.sde_out_func = MCL2Hinge(self.drop_nets[0][-1])
+        self.sde_out_func = MCL2HingeSS(self.drop_nets[0][-1])
         self.sde_class_loss = self.sde_out_func.loss_func
         self.sde_reg_loss = lam_l2a * T.sum([lay.act_sq_sum for lay in self.drop_nets[0]])
         self.sde_errors = self.sde_out_func.errors
 
         # Use the negative log likelihood of the logistic regression layer of
         # the RAW net as the standard optimization objective.
-        self.raw_out_func = MCL2Hinge(self.layers[-1])
+        self.raw_out_func = MCL2HingeSS(self.layers[-1])
         self.raw_class_loss = self.raw_out_func.loss_func
         self.raw_reg_loss = lam_l2a * T.sum([lay.act_sq_sum for lay in self.layers])
         self.raw_errors = self.raw_out_func.errors
@@ -161,18 +166,23 @@ class DEV_MLP(object):
         # Compute DEV loss based on the classification performance of the RAW
         # net and the "Dropout Ensemble Variance"
         self.dev_out_func = self.raw_out_func
-        self.dev_class_loss = self.raw_out_func.loss_func #lambda y: \
-                #(self.raw_class_loss(y) + self.sde_class_loss(y)) / 2.0
+        self.dev_class_loss = lambda y: \
+                (self.raw_class_loss(y) + self.sde_class_loss(y)) / 2.0
         self.dev_reg_loss = (self.raw_reg_loss + self.sde_reg_loss) / 2.0
-        self.dev_dev_loss = self.dev_loss(dev_types, dev_lams)
+        self.dev_dev_loss = lambda y: \
+                self.dev_loss(dev_types, dev_lams, ss_ratio, y)
         self.dev_errors = self.raw_out_func.errors
         if (sum(dev_lams_as_numbers) < 1e-5):
             # When all dev_lams are 0 (ish), just switch to standard SGD
+            self.dev_class_loss = self.raw_out_func.loss_func
             self.dev_reg_loss = self.raw_reg_loss
-            self.dev_dev_loss = T.sum(dev_lams)
+            self.dev_dev_loss = lambda y: T.sum(dev_lams)
 
-    def dev_loss(self, dev_types=[], dev_lams=[]):
-        var_fun = lambda x1, x2: T.sum((x1 - x2)**2.0) / x1.shape[0]
+    def dev_loss(self, dev_types, dev_lams, ss_ratio, y):
+        su_mask = ss_ratio * T.neq(y, 0).reshape((y.shape[0], 1))
+        un_mask = T.eq(y, 0).reshape((y.shape[0], 1))
+        ss_mask = su_mask + un_mask
+        var_fun = lambda x1, x2: T.sum(((x1 - x2) * ss_mask)**2.0) / T.sum(ss_mask)
         tanh_fun = lambda x1, x2: var_fun(T.tanh(x1), T.tanh(x2))
         norm_fun = lambda x1, x2: var_fun( \
                 (x1 / T.sqrt(T.sum(x1**2.0,axis=1,keepdims=1) + 1e-6)), \
@@ -202,12 +212,16 @@ class DEV_MLP(object):
 
 
 def test_mlp(
+        rng,
         mlp_params,
         sgd_params,
         datasets):
     """
-    Datasets should be a three-tuple in which each item is a (matrix, vector)
-    pair of (inputs, labels) for (training, validation, testing).
+    Datasets should be a four-tuple, in which the first item is a matrix/vector
+    pair of inputs/labels for training, the second item is a matrix of
+    unlabeled inputs for training, the third item is a matrix/vector pair of
+    inputs/labels for validation, and the fourth is a matrix/vector pair of
+    inputs/labels for testing.
     """
     initial_learning_rate = sgd_params['start_rate']
     learning_rate_decay = sgd_params['decay_rate']
@@ -219,17 +233,46 @@ def test_mlp(
     txt_file_name = "results_{0}.txt".format(result_tag)
     img_file_name = "weights_{0}.png".format(result_tag)
 
-    Xtr, Ytr = datasets[0]
-    Xva, Yva = datasets[1]
-    Xte, Yte = datasets[2]
+    # Get supervised and unsupervised portions of training data, and create
+    # arrays of start/end indices for easy minibatch slicing.
+    (Xtr_su, Ytr_su) = (datasets[0][0], T.cast(datasets[0][1], 'int32'))
+    (Xtr_un, Ytr_un) = (datasets[1][0], T.cast(datasets[1][1], 'int32'))
+    su_samples = Xtr_su.get_value(borrow=True).shape[0]
+    un_samples = Xtr_un.get_value(borrow=True).shape[0]
+    tr_batches = 250
+    mlp_params['ss_ratio'] = float(su_samples) / (su_samples + un_samples)
+    su_bsize = batch_size / 2
+    un_bsize = batch_size - su_bsize
+    su_batches = int(np.ceil(float(su_samples) / su_bsize))
+    un_batches = int(np.ceil(float(un_samples) / un_bsize))
+    su_bidx = [[i*su_bsize, min(su_samples, (i+1)*su_bsize)] for i in range(su_batches)]
+    un_bidx = [[i*un_bsize, min(un_samples, (i+1)*un_bsize)] for i in range(un_batches)]
+    su_bidx = theano.shared(value=np.asarray(su_bidx, dtype=theano.config.floatX))
+    un_bidx = theano.shared(value=np.asarray(un_bidx, dtype=theano.config.floatX))
+    su_bidx = T.cast(su_bidx, 'int32')
+    un_bidx = T.cast(un_bidx, 'int32')
+    # Get the validation and testing sets and create arrays of start/end
+    # indices for easy minibatch slicing
+    Xva, Yva = (datasets[2][0], T.cast(datasets[2][1], 'int32'))
+    Xte, Yte = (datasets[3][0], T.cast(datasets[3][1], 'int32'))
+    va_samples = Xva.get_value(borrow=True).shape[0]
+    te_samples = Xte.get_value(borrow=True).shape[0]
+    va_batches = int(np.ceil(va_samples / 100.0))
+    te_batches = int(np.ceil(te_samples / 100.0))
+    va_bidx = [[i*100, min(va_samples, (i+1)*100)] for i in range(va_batches)]
+    te_bidx = [[i*100, min(te_samples, (i+1)*100)] for i in range(te_batches)]
+    va_bidx = theano.shared(value=np.asarray(va_bidx, dtype=theano.config.floatX))
+    te_bidx = theano.shared(value=np.asarray(te_bidx, dtype=theano.config.floatX))
+    va_bidx = T.cast(va_bidx, 'int32')
+    te_bidx = T.cast(te_bidx, 'int32')
 
-    # compute number of minibatches for training, validation and testing
-    n_train_batches = Xtr.get_value(borrow=True).shape[0] / batch_size
-    n_valid_batches = Xva.get_value(borrow=True).shape[0] / batch_size
-    n_test_batches = Xte.get_value(borrow=True).shape[0] / batch_size
-
-    print "train batches: {0:d}, valid batches: {1:d}, test_batches: {2:d}".format( \
-            n_train_batches, n_valid_batches, n_test_batches)
+    print "Dataset info:"
+    print "  supervised samples: {0:d}, unsupervised samples: {1:d}".format( \
+            su_samples, un_samples)
+    print "  samples/minibatch: {0:d}, minibatches/epoch: {1:d}".format( \
+            (su_bsize + un_bsize), tr_batches)
+    print "  validation samples: {0:d}, testing samples: {1:d}".format( \
+            va_samples, te_samples)
 
     ######################
     # BUILD ACTUAL MODEL #
@@ -240,22 +283,23 @@ def test_mlp(
     # allocate symbolic variables for the data
     index = T.lscalar() # index to a [mini]batch
     epoch = T.scalar()  # epoch counter
-    x = T.matrix('x')   # data is presented as rasterized images
-    y = T.ivector('y')  # labels are presented as integer categories
+    su_idx = T.lscalar() # symbolic batch index into supervised samples
+    un_idx = T.lscalar() # symbolic batch index into unsupervised samples
+    x = T.matrix('x')   # some observations have labels
+    y = T.ivector('y')  # the labels are presented as integer categories
     learning_rate = theano.shared(np.asarray(initial_learning_rate,
         dtype=theano.config.floatX))
 
-    rng = np.random.RandomState(12345)
-
     # construct the MLP class
-    NET = DEV_MLP(rng=rng, input=x, params=mlp_params)
+    NET = SS_DEV_MLP(rng=rng, input=x, params=mlp_params)
 
     # Build the expressions for the cost functions. If training without SDE or
     # DEV regularization, the DEV loss/cost will be used, but the weights for
     # DEV regularization on each layer will be set to 0 before training.
     sde_cost = NET.sde_class_loss(y) + NET.sde_reg_loss
-    dev_cost = 0.5 * (NET.dev_class_loss(y) + NET.dev_dev_loss) + NET.dev_reg_loss
-    NET_metrics = [NET.raw_errors(y), NET.raw_class_loss(y), NET.dev_dev_loss, NET.raw_reg_loss]
+    dev_cost = NET.dev_class_loss(y) + NET.dev_dev_loss(y) + NET.dev_reg_loss
+    NET_metrics = [NET.raw_errors(y), NET.raw_class_loss(y), \
+                   NET.dev_dev_loss(y), NET.raw_reg_loss]
 
     ############################################################################
     # Compile testing and validation models. These models are evaluated on     #
@@ -265,17 +309,14 @@ def test_mlp(
     test_model = theano.function(inputs=[index],
             outputs=NET_metrics,
             givens={
-                x: Xte[index * batch_size:(index + 1) * batch_size],
-                y: T.cast(Yte[index * batch_size:(index + 1) * batch_size], 'int32')})
-    #theano.printing.pydotprint(test_model, outfile="test_file.png",
-    #        var_with_name_simple=True)
+                x: Xte[te_bidx[index,0]:te_bidx[index,1],:],
+                y: Yte[te_bidx[index,0]:te_bidx[index,1]]})
+
     validate_model = theano.function(inputs=[index],
             outputs=NET_metrics,
             givens={
-                x: Xva[index * batch_size:(index + 1) * batch_size],
-                y: T.cast(Yva[index * batch_size:(index + 1) * batch_size], 'int32')})
-    #theano.printing.pydotprint(validate_model, outfile="validate_file.png",
-    #        var_with_name_simple=True)
+                x: Xva[va_bidx[index,0]:va_bidx[index,1],:],
+                y: Yva[va_bidx[index,0]:va_bidx[index,1]]})
 
     ############################################################################
     # Prepare momentum and gradient variables, and construct the updates that  #
@@ -331,18 +372,22 @@ def test_mlp(
             dev_updates[param] = dev_param
 
     # Compile theano functions for training.  These return the training cost
-    # update the model parameters.
-    train_sde = theano.function(inputs=[epoch, index], outputs=NET_metrics,
+    # and update the model parameters.
+    train_sde = theano.function(inputs=[epoch, su_idx, un_idx], outputs=NET_metrics,
             updates=sde_updates,
             givens={
-                x: Xtr[index * batch_size:(index + 1) * batch_size],
-                y: T.cast(Ytr[index * batch_size:(index + 1) * batch_size], 'int32')})
+                x: T.concatenate([Xtr_su[su_bidx[su_idx,0]:su_bidx[su_idx,1],:], \
+                        Xtr_un[un_bidx[un_idx,0]:un_bidx[un_idx,1],:]]),
+                y: T.concatenate([Ytr_su[su_bidx[su_idx,0]:su_bidx[su_idx,1]], \
+                        Ytr_un[un_bidx[un_idx,0]:un_bidx[un_idx,1]]])})
 
-    train_dev = theano.function(inputs=[epoch, index], outputs=NET_metrics,
+    train_dev = theano.function(inputs=[epoch, su_idx, un_idx], outputs=NET_metrics,
             updates=dev_updates,
             givens={
-                x: Xtr[index * batch_size:(index + 1) * batch_size],
-                y: T.cast(Ytr[index * batch_size:(index + 1) * batch_size], 'int32')})
+                x: T.concatenate([Xtr_su[su_bidx[su_idx,0]:su_bidx[su_idx,1],:], \
+                        Xtr_un[un_bidx[un_idx,0]:un_bidx[un_idx,1],:]]),
+                y: T.concatenate([Ytr_su[su_bidx[su_idx,0]:su_bidx[su_idx,1]], \
+                        Ytr_un[un_bidx[un_idx,0]:un_bidx[un_idx,1]]])})
 
     # Theano function to decay the learning rate, this is separate from the
     # training function because we only want to do this once each epoch instead
@@ -355,10 +400,10 @@ def test_mlp(
     ###############
     print '... training'
 
-    best_params = None
-    best_validation_errors = np.inf
-    best_iter = 0
-    test_score = 0.
+    validation_errors = 1e6
+    test_errors = 1e6
+    min_validation_errors = 1e6
+    min_test_errors = 1e6
     epoch_counter = 0
     start_time = time.clock()
 
@@ -370,73 +415,95 @@ def test_mlp(
     results_file.flush()
 
     e_time = time.clock()
-    epoch_metrics = train_sde(1, 1)
+    su_index = 0
+    un_index = 0
+    # Get array of epoch metrics (on a single minibatch)
+    epoch_metrics = train_sde(1, su_index, un_index)
+    # Compute metrics on validation set
+    validation_metrics = [validate_model(i) for i in xrange(va_batches)]
+    validation_errors = np.sum([m[0] for m in validation_metrics])
+    # Compute metrics on testing set
+    test_metrics = [test_model(i) for i in xrange(te_batches)]
+    test_errors = np.sum([m[0] for m in test_metrics])
     while epoch_counter < n_epochs:
-        # Train this epoch
+        ######################################################
+        # Process some number of minibatches for this epoch. #
+        ######################################################
         epoch_counter = epoch_counter + 1
-        for minibatch_index in xrange(n_train_batches):
-            if ((epoch_counter <= 0) or (mlp_type == 'sde')):
-                batch_metrics = train_sde(epoch_counter, minibatch_index)
-            else:
-                batch_metrics = train_dev(epoch_counter, minibatch_index)
-            epoch_metrics = [(em + bm) for (em, bm) in zip(epoch_metrics, batch_metrics)]
-
-        # Compute classification errors on validation set
-        validation_metrics = [validate_model(i) for i in xrange(n_valid_batches)]
-        this_validation_errors = np.sum([m[0] for m in validation_metrics])
-
-        # Report and save progress.
-        epoch_metrics = [(float(v) / float(n_train_batches)) for v in epoch_metrics]
-        tag = (" **" if (this_validation_errors < best_validation_errors) else " ")
-        print "epoch {0}: t_err={1:.2f}, t_loss={2:.4f}, t_dev={3:.4f}, t_reg={4:.4f}, v_err={5:d}{6}".format( \
-                epoch_counter, epoch_metrics[0], epoch_metrics[1], epoch_metrics[2], epoch_metrics[3], \
-                int(this_validation_errors), tag)
-        print "--time: {0:.4f}".format((time.clock() - e_time))
         epoch_metrics = [0.0 for v in epoch_metrics]
-        e_time = time.clock()
-
-        best_validation_errors = min(best_validation_errors, this_validation_errors)
-        results_file.write("{0}\n".format(this_validation_errors))
-        results_file.flush()
-
+        for minibatch_index in xrange(tr_batches):
+            # Compute update for some joint supervised/unsupervised minibatch
+            if ((epoch_counter <= 0) or (mlp_type == 'sde')):
+                batch_metrics = train_sde(epoch_counter, su_index, un_index)
+            else:
+                batch_metrics = train_dev(epoch_counter, su_index, un_index)
+            epoch_metrics = [(em + bm) for (em, bm) in zip(epoch_metrics, batch_metrics)]
+            su_index = (su_index + 1) if ((su_index + 1) < su_batches) else 0
+            un_index = (un_index + 1) if ((un_index + 1) < un_batches) else 0
+        # Update the learning rate
         new_learning_rate = set_learning_rate()
 
+        ######################################################
+        # Validation, testing, and general diagnostic stuff. #
+        ######################################################
+        # Compute metrics on validation set
+        validation_metrics = [validate_model(i) for i in xrange(va_batches)]
+        validation_errors = np.sum([m[0] for m in validation_metrics])
+
+        # Compute test error if new best validation error was found
+        tag = " "
+        if ((validation_errors < min_validation_errors) or ((epoch_counter % 10) == 0)):
+            # Compute metrics on testing set
+            test_metrics = [test_model(i) for i in xrange(te_batches)]
+            test_errors = np.sum([m[0] for m in test_metrics])
+            if (validation_errors < min_validation_errors):
+                min_validation_errors = validation_errors
+                min_test_errors = test_errors
+                tag = ", test={0:d}".format(test_errors)
+        results_file.write("{0:d} {1:d}\n".format(validation_errors, test_errors))
+        results_file.flush()
+
+        # Report and save progress.
+        epoch_metrics[0] = float(epoch_metrics[0]) / (tr_batches * su_bsize)
+        epoch_metrics[1:] = [(float(v) / tr_batches) for v in epoch_metrics[1:]]
+        print "epoch {0:d}: t_err={1:.2f}, t_loss={2:.4f}, t_dev={3:.4f}, t_reg={4:.4f}, valid={5:d}{6}".format( \
+                epoch_counter, epoch_metrics[0], epoch_metrics[1], epoch_metrics[2], epoch_metrics[3], \
+                int(validation_errors), tag)
+        print "--time: {0:.4f}".format((time.clock() - e_time))
+        e_time = time.clock()
         # Save first layer weights to an image locally
         utils.visualize(NET, 0, img_file_name)
 
-    end_time = time.clock()
-
-    # Compute loss on test set
-    test_metrics = [test_model(i) for i in xrange(n_test_batches)]
-    test_score = np.sum([m[0] for m in test_metrics])
-    print(('Optimization complete. Best validation score of %f %% '
-           'obtained at iteration %i, with test performance %f %%') %
-          (best_validation_errors * 100., best_iter, test_score * 100.))
-    print >> sys.stderr, ('The code for file ' +
-                          os.path.split(__file__)[1] +
-                          ' ran for %.2fm' % ((end_time - start_time) / 60.))
+    print("Optimization complete. Best validation score of {0:.4f}, with test score {1:.4f}".format( \
+          (min_validation_errors / 100.0), (min_test_errors / 100.0)))
+    results_file.write("{0:d} {1:d}\n".format(min_validation_errors, min_test_errors))
+    results_file.flush()
 
 if __name__ == '__main__':
     import sys
 
+    # Initialize a random number generator for this test
+    rng = np.random.RandomState(13579)
+
     # Set SGD-related parameters (and bound on net weights)
     sgd_params = {}
-    sgd_params['start_rate'] = 0.25
+    sgd_params['start_rate'] = 0.1
     sgd_params['decay_rate'] = 0.998
     sgd_params['wt_norm_bound'] = 3.75
     sgd_params['epochs'] = 1000
-    sgd_params['batch_size'] = 100
+    sgd_params['batch_size'] = 128
     # Set parameters for the network to be trained
     mlp_params = {}
-    mlp_params['layer_sizes'] = [28*28, 800, 800, 10]
+    mlp_params['layer_sizes'] = [28*28, 500, 500, 11]
     mlp_params['lam_l2a'] = 1e-3
     mlp_params['dev_clones'] = 1
     mlp_params['dev_types'] = [1, 1, 2]
     mlp_params['dev_lams'] = [0.1, 0.1, 2.0]
     mlp_params['use_bias'] = 1
-    # Pick a some data to train with
-    datasets = load_mnist('data/mnist_batches.npz')
-    #datasets = load_umontreal_data('data/mnist.pkl')
+
+    # Load some data to train/validate/test with
+    dataset = 'data/mnist.pkl.gz'
+    datasets = load_udm_ss(dataset, 1000, rng)
 
     # Set the type of network to train, based on user input
     if (len(sys.argv) != 3):
@@ -456,7 +523,9 @@ if __name__ == '__main__':
         print "I don't know how to '{0}'".format(sys.argv[1])
         exit(1)
 
-    test_mlp(mlp_params=mlp_params, \
+    # Run the test
+    test_mlp(rng=rng, \
+            mlp_params=mlp_params, \
             sgd_params=sgd_params, \
             datasets=datasets)
 
