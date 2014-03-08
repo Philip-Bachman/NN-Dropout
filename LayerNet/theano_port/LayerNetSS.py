@@ -54,7 +54,7 @@ class HiddenLayer(object):
             self.output = activation(self.linear_output)
 
         # Compute expected sum of squared activations, to regularize
-        self.act_sq_sum = T.sum(self.output**2.0) / self.output.size
+        self.act_l2_sum = T.sum(self.output**2.0) / self.output.size
 
         # Conveniently package layer parameters
         if use_bias:
@@ -153,14 +153,14 @@ class SS_DEV_MLP(object):
         # the first DEV clone as dropout optimization objective.
         self.sde_out_func = MCL2HingeSS(self.drop_nets[0][-1])
         self.sde_class_loss = self.sde_out_func.loss_func
-        self.sde_reg_loss = lam_l2a * T.sum([lay.act_sq_sum for lay in self.drop_nets[0]])
+        self.sde_reg_loss = lam_l2a * T.sum([lay.act_l2_sum for lay in self.drop_nets[0]])
         self.sde_errors = self.sde_out_func.errors
 
         # Use the negative log likelihood of the logistic regression layer of
         # the RAW net as the standard optimization objective.
         self.raw_out_func = MCL2HingeSS(self.layers[-1])
         self.raw_class_loss = self.raw_out_func.loss_func
-        self.raw_reg_loss = lam_l2a * T.sum([lay.act_sq_sum for lay in self.layers])
+        self.raw_reg_loss = lam_l2a * T.sum([lay.act_l2_sum for lay in self.layers])
         self.raw_errors = self.raw_out_func.errors
 
         # Compute DEV loss based on the classification performance of the RAW
@@ -452,14 +452,15 @@ def test_mlp(
 
         # Compute test error if new best validation error was found
         tag = " "
-        if ((validation_errors < min_validation_errors) or ((epoch_counter % 10) == 0)):
+        #if ((validation_errors < min_validation_errors) or ((epoch_counter % 10) == 0)):
+        if ('I' == 'I'):
             # Compute metrics on testing set
             test_metrics = [test_model(i) for i in xrange(te_batches)]
             test_errors = np.sum([m[0] for m in test_metrics])
+            tag = ", test={0:d}".format(test_errors)
             if (validation_errors < min_validation_errors):
                 min_validation_errors = validation_errors
                 min_test_errors = test_errors
-                tag = ", test={0:d}".format(test_errors)
         results_file.write("{0:d} {1:d}\n".format(validation_errors, test_errors))
         results_file.flush()
 

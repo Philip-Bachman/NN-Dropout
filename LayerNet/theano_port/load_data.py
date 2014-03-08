@@ -54,7 +54,7 @@ def load_udm_ss(dataset, sup_count, rng):
     compared to their standard value, as 'un-classed' examples take label 0.
     """
 
-    udm_data = load_umontreal_data(dataset,as_shared=False)
+    udm_data = load_udm(dataset,as_shared=False)
     Xtr = udm_data[0][0]
     Ytr = udm_data[0][1][:,np.newaxis]
 
@@ -75,13 +75,15 @@ def load_udm_ss(dataset, sup_count, rng):
         Xtr_su.append(Xtr[c_idx[0:pc_count],:])
         Ytr_su.append(Ytr[c_idx[0:pc_count],:])
         Xtr_un.append(Xtr[c_idx[pc_count:],:])
-        Ytr_un.append(np.zeros(Ytr[c_idx[pc_count:],:].shape, dtype=Ytr.dtype))
+        Ytr_un.append(Ytr[c_idx[pc_count:],:])
 
     # Stack per-class supervised/unsupervised splits into matrices
     Xtr_su = np.vstack(Xtr_su)
     Ytr_su = np.vstack(Ytr_su)
     Xtr_un = np.vstack(Xtr_un)
     Ytr_un = np.vstack(Ytr_un)
+    Xtr_un = np.vstack([Xtr_un, Xtr_su])
+    Ytr_un = 0 * np.vstack([Ytr_un, Ytr_su])
 
     # Shuffle the rows so that observations are not grouped by class
     shuf_idx = rng.permutation(Xtr_su.shape[0])
@@ -101,12 +103,8 @@ def load_udm_ss(dataset, sup_count, rng):
 
     return rval
 
-def load_umontreal_data(dataset, as_shared=True):
-    ''' Loads the dataset
-
-    :type dataset: string
-    :param dataset: the path to the dataset (here MNIST)
-    '''
+def load_udm(dataset, as_shared=True):
+    """Loads the UdM train/validate/test split of MNIST."""
 
     #############
     # LOAD DATA #

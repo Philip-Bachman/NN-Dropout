@@ -1,35 +1,3 @@
-"""
- This tutorial introduces denoising auto-encoders (dA) using Theano.
-
- Denoising autoencoders are the building blocks for SdA.
- They are based on auto-encoders as the ones used in Bengio et al. 2007.
- An autoencoder takes an input x and first maps it to a hidden representation
- y = f_{\theta}(x) = s(Wx+b), parameterized by \theta={W,b}. The resulting
- latent representation y is then mapped back to a "reconstructed" vector
- z \in [0,1]^d in input space z = g_{\theta'}(y) = s(W'y + b').  The weight
- matrix W' can optionally be constrained such that W' = W^T, in which case
- the autoencoder is said to have tied weights. The network is trained such
- that to minimize the reconstruction error (the error between x and z).
-
- For the denosing autoencoder, during training, first x is corrupted into
- \tilde{x}, where \tilde{x} is a partially destroyed version of x by means
- of a stochastic mapping. Afterwards y is computed as before (using
- \tilde{x}), y = s(W\tilde{x} + b) and z as s(W'y + b'). The reconstruction
- error is now measured between z and the uncorrupted input x, which is
- computed as the cross-entropy :
-      - \sum_{k=1}^d[ x_k \log z_k + (1-x_k) \log( 1-z_k)]
-
-
- References :
-   - P. Vincent, H. Larochelle, Y. Bengio, P.A. Manzagol: Extracting and
-   Composing Robust Features with Denoising Autoencoders, ICML'08, 1096-1103,
-   2008
-   - Y. Bengio, P. Lamblin, D. Popovici, H. Larochelle: Greedy Layer-Wise
-   Training of Deep Networks, Advances in Neural Information Processing
-   Systems 19, 2007
-
-"""
-
 import cPickle
 import gzip
 import os
@@ -42,35 +10,13 @@ import theano
 import theano.tensor as T
 from theano.tensor.shared_randomstreams import RandomStreams
 
-from logistic_sgd import load_data
+from load_data import load_udm
 from utils import tile_raster_images
 
 import PIL.Image
 
 
 class dA(object):
-    """Denoising Auto-Encoder class (dA)
-
-    A denoising autoencoders tries to reconstruct the input from a corrupted
-    version of it by projecting it first in a latent space and reprojecting
-    it afterwards back in the input space. Please refer to Vincent et al.,2008
-    for more details. If x is the input then equation (1) computes a partially
-    destroyed version of x by means of a stochastic mapping q_D. Equation (2)
-    computes the projection of the input into the latent space. Equation (3)
-    computes the reconstruction of the input, while equation (4) computes the
-    reconstruction error.
-
-    .. math::
-
-        \tilde{x} ~ q_D(\tilde{x}|x)                                     (1)
-
-        y = s(W \tilde{x} + b)                                           (2)
-
-        x = s(W' y  + b')                                                (3)
-
-        L(x,z) = -sum_{k=1}^d [x_k \log z_k + (1-x_k) \log( 1-z_k)]      (4)
-
-    """
 
     def __init__(self, numpy_rng, theano_rng=None, input=None,
                  n_visible=784, n_hidden=500,
@@ -171,29 +117,9 @@ class dA(object):
         self.params = [self.W, self.b, self.b_prime]
 
     def get_corrupted_input(self, input, corruption_level):
-        """This function keeps ``1-corruption_level`` entries of the inputs the
-        same and zero-out randomly selected subset of size ``coruption_level``
-        Note : first argument of theano.rng.binomial is the shape(size) of
-               random numbers that it should produce
-               second argument is the number of trials
-               third argument is the probability of success of any trial
-
-                this will produce an array of 0s and 1s where 1 has a
-                probability of 1 - ``corruption_level`` and 0 with
-                ``corruption_level``
-
-                The binomial function return int64 data type by
-                default.  int64 multiplicated by the input
-                type(floatX) always return float64.  To keep all data
-                in floatX when floatX is float32, we set the dtype of
-                the binomial to floatX. As in our case the value of
-                the binomial is always 0 or 1, this don't change the
-                result. This is needed to allow the gpu to work
-                correctly as it only support float32 for now.
-
-        """
+        """Apply binary masking noise to the input."""
         return  self.theano_rng.binomial(size=input.shape, n=1,
-                                         p=1 - corruption_level,
+                                         p=(1 - corruption_level),
                                          dtype=theano.config.floatX) * input
 
     def get_hidden_values(self, input):
@@ -236,25 +162,14 @@ class dA(object):
         return (cost, updates)
 
 
-def test_dA(learning_rate=0.1, training_epochs=15,
-            dataset='mnist.pkl.gz',
-            batch_size=20, output_folder='dA_plots'):
+def test_dA(learning_rate=0.1, training_epochs=30,
+            dataset='./data/mnist.pkl.gz',
+            batch_size=25, output_folder='dA_plots'):
 
     """
-    This demo is tested on MNIST
-
-    :type learning_rate: float
-    :param learning_rate: learning rate used for training the DeNosing
-                          AutoEncoder
-
-    :type training_epochs: int
-    :param training_epochs: number of epochs used for training
-
-    :type dataset: string
-    :param dataset: path to the picked dataset
-
+    Blargh!
     """
-    datasets = load_data(dataset)
+    datasets = load_udm(dataset)
     train_set_x, train_set_y = datasets[0]
 
     # compute number of minibatches for training, validation and testing
@@ -280,11 +195,8 @@ def test_dA(learning_rate=0.1, training_epochs=15,
     cost, updates = da.get_cost_updates(corruption_level=0.,
                                         learning_rate=learning_rate)
 
-    train_da = theano.function([index], cost, updates=updates,
-         givens={x: train_set_x[index * batch_size:
-                                (index + 1) * batch_size]})
-
-    start_time = time.clock()
+    train_da = theano.function(inputs=[index], outputs=[cost], updates=updates,
+            givens={ x: train_set_x[index*batch_size:(index+1)*batch_size,:] })
 
     ############
     # TRAINING #
@@ -292,25 +204,21 @@ def test_dA(learning_rate=0.1, training_epochs=15,
 
     # go through training epochs
     for epoch in xrange(training_epochs):
-        # go through trainng set
+        # go through training set
         c = []
+        t1 = time.clock()
         for batch_index in xrange(n_train_batches):
             c.append(train_da(batch_index))
+        t2 = time.clock()
 
-        print 'Training epoch %d, cost ' % epoch, numpy.mean(c)
+        print "Training epoch {0:d}, cost {1:.4f}, time {2:.4f}".format( \
+                epoch, numpy.mean(c), (t2 - t1))
 
-    end_time = time.clock()
-
-    training_time = (end_time - start_time)
-
-    print >> sys.stderr, ('The no corruption code for file ' +
-                          os.path.split(__file__)[1] +
-                          ' ran for %.2fm' % ((training_time) / 60.))
-    image = PIL.Image.fromarray(
-        tile_raster_images(X=da.W.get_value(borrow=True).T,
-                           img_shape=(28, 28), tile_shape=(10, 10),
-                           tile_spacing=(1, 1)))
-    image.save('filters_corruption_0.png')
+        image = PIL.Image.fromarray(
+            tile_raster_images(X=da.W.get_value(borrow=True).T,
+                               img_shape=(28, 28), tile_shape=(10, 10),
+                               tile_spacing=(1, 1)))
+        image.save('filters_corruption_00.png')
 
     #####################################
     # BUILDING THE MODEL CORRUPTION 30% #
@@ -329,34 +237,27 @@ def test_dA(learning_rate=0.1, training_epochs=15,
          givens={x: train_set_x[index * batch_size:
                                   (index + 1) * batch_size]})
 
-    start_time = time.clock()
-
     ############
     # TRAINING #
     ############
 
     # go through training epochs
     for epoch in xrange(training_epochs):
-        # go through trainng set
+        # go through training set
         c = []
+        t1 = time.clock()
         for batch_index in xrange(n_train_batches):
             c.append(train_da(batch_index))
+        t2 = time.clock()
 
-        print 'Training epoch %d, cost ' % epoch, numpy.mean(c)
+        print "Training epoch {0:d}, cost {1:.4f}, time {2:.4f}".format( \
+                epoch, numpy.mean(c), (t2 - t1))
 
-    end_time = time.clock()
-
-    training_time = (end_time - start_time)
-
-    print >> sys.stderr, ('The 30% corruption code for file ' +
-                          os.path.split(__file__)[1] +
-                          ' ran for %.2fm' % (training_time / 60.))
-
-    image = PIL.Image.fromarray(tile_raster_images(
-        X=da.W.get_value(borrow=True).T,
-        img_shape=(28, 28), tile_shape=(10, 10),
-        tile_spacing=(1, 1)))
-    image.save('filters_corruption_30.png')
+        image = PIL.Image.fromarray(
+            tile_raster_images(X=da.W.get_value(borrow=True).T,
+                               img_shape=(28, 28), tile_shape=(10, 10),
+                               tile_spacing=(1, 1)))
+        image.save('filters_corruption_30.png')
 
     os.chdir('../')
 
