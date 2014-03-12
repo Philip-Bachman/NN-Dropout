@@ -17,6 +17,19 @@ def row_normalize(x):
     x_normed = x / T.sqrt(T.sum(x**2.,axis=1,keepdims=1)+1e-6)
     return x_normed
 
+def rehu_actfun(x):
+    """Compute rectified huberized activation for x."""
+    M_quad = (x > 0.0) - (x >= 0.5)
+    M_line = (x >= 0.5)
+    x_rehu = (M_quad * x**2.) + (M_line * (x - 0.25))
+    return x_rehu
+
+def relu_actfun(x):
+    """Compute rectified linear activation for x."""
+    x_relu = T.maximum(0., x)
+    return x_relu
+
+
 class HiddenLayer(object):
     def __init__(self, rng, input, n_in, n_out, \
                  activation, drop_rate=0., \
@@ -33,6 +46,9 @@ class HiddenLayer(object):
         self.activation = activation
         self.in_dim = n_in
         self.out_dim = n_out
+        # Don't use a bias for L2 pooling layers
+        if (self.activation == 'l2_pool'):
+            use_bias = False
 
         # Initialize connection weights and biases, if not given
         if W is None:
@@ -54,8 +70,9 @@ class HiddenLayer(object):
             self.linear_output = T.dot(self.input, self.W)
 
         # Apply some non-linearity to compute "activation" for this layer
-        if activation is None:
-            self.output = self.linear_output
+        if (self.activation == 'l2_pool'):
+            self.output = T.sqrt( \
+                    T.dot(self.input**2., abs(self.W)) + self.b)
         else:
             self.output = self.activation(self.linear_output)
 
@@ -91,13 +108,14 @@ class SS_DEV_NET(object):
             rng,
             input,
             params):
-        # Setup simple activation function for this net. If using the ReLu
+        # Setup simple activation function for this net. If using the ReLU
         # activation, set self.using_sigmoid to 0. If using the sigmoid
         # activation, set self.using_sigmoid to 1.
-        #self.act_fun = lambda x: T.maximum(0., x)
-        #self.using_sigmoid = 0
-        self.act_fun = lambda x: T.nnet.sigmoid(x)
-        self.using_sigmoid = 1
+        #self.act_fun = lambda x: rehu_actfun(x)
+        self.act_fun = lambda x: relu_actfun(x)
+        #self.act_fun = lambda x: T.nnet.sigmoid(x)
+        self.using_sigmoid = 0
+        #self.using_sigmoid = 1
         ################################################
         # Process user-suplied parameters for this net #
         ################################################
@@ -105,6 +123,7 @@ class SS_DEV_NET(object):
         lam_l2a = params['lam_l2a']
         use_bias = params['use_bias']
         dc_count = params['dev_clones']
+        self.is_semisupervised = 0
         # DEV-related parameters are as follows:
         #   dev_types: the transform to apply to the activations of each layer
         #              prior to computing dropout ensemble variance
@@ -133,8 +152,10 @@ class SS_DEV_NET(object):
         # Iteratively append layers to the RAW net and each of some number
         # of droppy DEV clones.
         first_layer = True
+        lay_num = 0
         for n_in, n_out in weight_matrix_sizes:
             # Add a new layer to the RAW (i.e. undropped) net
+            act_fun = self.act_fun #'l2_pool' if (lay_num == 1) else self.act_fun
             self.mlp_layers.append(HiddenLayer(rng=rng, \
                     input=next_raw_input, \
                     activation=self.act_fun, \
@@ -156,6 +177,7 @@ class SS_DEV_NET(object):
                         n_in=n_in, n_out=n_out, use_bias=use_bias))
                 next_drop_inputs[i] = self.dev_clones[i][-1].output
             first_layer = False
+            lay_num = lay_num + 1
         # Mash all the parameters together, listily
         self.mlp_params = [p for l in self.mlp_layers for p in l.params]
         self.layer_count = len(self.mlp_layers)
@@ -165,6 +187,10 @@ class SS_DEV_NET(object):
         # up a cost function for training each layer in this net as a DAE with
         # inputs determined by the output of the preceeding layer.
         self._construct_dae_layers(rng=rng)
+
+        # Build layers and functions for computing finite-differences-based
+        # regularization of functional curvature.
+        self._construct_grad_layers(rng, lam_g1=0.3, lam_g2=0.3, step_len=0.1)
 
         # Use the negative log likelihood of the logistic regression layer of
         # the RAW net as the standard optimization objective.
@@ -218,7 +244,13 @@ class SS_DEV_NET(object):
         DEV regularization on the labeled data, just pass it through the net
         both with and without a label.
         """
-        ss_mask = T.eq(Y, 0).reshape((Y.shape[0], 1))
+        if not self.is_semisupervised:
+            # Compute DEV regularizer using _all_ observations, not just those
+            # with class label 0. (assume -1 is not a class label...)
+            ss_mask = T.neq(Y, -1).reshape((Y.shape[0], 1))
+        else:
+            # Compute DEV regularizer only for observations with class label 0
+            ss_mask = T.eq(Y, 0).reshape((Y.shape[0], 1))
         var_fun = lambda x1, x2: T.sum(((x1 - x2) * ss_mask)**2.) / T.sum(ss_mask)
         tanh_fun = lambda x1, x2: var_fun(T.tanh(x1), T.tanh(x2))
         norm_fun = lambda x1, x2: var_fun(row_normalize(x1), row_normalize(x2))
@@ -300,6 +332,57 @@ class SS_DEV_NET(object):
                     (raw_sparse_loss / dae_input.shape[0])] )
             self.sde_dae_losses.append( [(sde_recon_loss / dae_input.shape[0]), \
                     (sde_sparse_loss / dae_input.shape[0])] )
+        return 1
+
+    def _construct_grad_layers(self, rng, lam_g1=0., lam_g2=0., step_len=0.1):
+        """Construct siamese networks for regularizing first and second order
+        directional derivatives via stochastic finite differences."""
+        self.left_layers = []
+        self.right_layers = []
+        for mlp_layer in self.mlp_layers:
+            W = mlp_layer.W
+            b = mlp_layer.b
+            in_dim = mlp_layer.in_dim
+            out_dim = mlp_layer.out_dim
+            [left_input, right_input] = self._twin_displacement_noise( \
+                    rng, mlp_layer.input, step_len)
+            # Construct left/right twins of the main MLP, through which points
+            # will be passed for use in finite-difference-based regularization
+            # of first and second-order functional curvature.
+            left_layer = HiddenLayer(rng=rng, \
+                        input=left_input, \
+                        activation=mlp_layer.activation, \
+                        drop_rate=0., \
+                        W=W, b=b, \
+                        n_in=in_dim, n_out=out_dim, use_bias=1)
+            right_layer = HiddenLayer(rng=rng, \
+                        input=right_input, \
+                        activation=mlp_layer.activation, \
+                        drop_rate=0., \
+                        W=W, b=b, \
+                        n_in=in_dim, n_out=out_dim, use_bias=1)
+            self.left_layers.append(left_layer)
+            self.right_layers.append(right_layer)
+        # Construct the loss functions for first and second-order grads
+        self.grad_losses = []
+        for (l_num, mlp_layer) in enumerate(self.mlp_layers):
+            if (l_num < (self.layer_count - 1)):
+                # Use the activation-transformed layer response
+                left_vals = self.left_layers[l_num].output
+                center_vals = mlp_layer.output
+                right_vals = self.right_layers[l_num].output
+            else:
+                # Use the linear layer response (at output layer)
+                left_vals = self.left_layers[l_num].linear_output
+                center_vals = mlp_layer.linear_output
+                right_vals = self.right_layers[l_num].linear_output
+            g1l_loss = T.sum(((left_vals - center_vals) / step_len)**2.)
+            g1r_loss = T.sum(((right_vals - center_vals) / step_len)**2.)
+            g1_loss = (g1l_loss + g1r_loss) / 2.
+            g2_loss = T.sum(((left_vals + right_vals - (2. * center_vals)) \
+                    / step_len**2.)**2.)
+            self.grad_losses.append(((lam_g1 * g1_loss) + (lam_g2 * g2_loss)) \
+                    / center_vals.shape[0])
         return 1
 
     def _masking_noise(self, rng, input, nz_lvl):
