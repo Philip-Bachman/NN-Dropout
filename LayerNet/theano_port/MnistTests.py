@@ -175,18 +175,18 @@ def batch_test_ss_mlp(test_count=10, su_count=1000):
         sgd_params['mlp_type'] = 'raw'
         mlp_params['dev_lams'] = [0., 0., 0.]
         test_ss_mlp(mlp_params=mlp_params, sgd_params=sgd_params, \
-                su_count=su_count, rng_seed=test_num)
+                su_count=su_count, rng_seed=5*test_num)
         # Run test with standard dropout on supervised examples
         sgd_params['result_tag'] = "ss_sde_500x500_{0:d}".format(test_num)
         sgd_params['mlp_type'] = 'sde'
         test_ss_mlp(mlp_params=mlp_params, sgd_params=sgd_params, \
-                su_count=su_count, rng_seed=test_num)
+                su_count=su_count, rng_seed=5*test_num)
         # Run test with DEV regularization on unsupervised examples
         sgd_params['result_tag'] = "ss_dev_500x500_{0:d}".format(test_num)
         sgd_params['mlp_type'] = 'dev'
         mlp_params['dev_lams'] = [0.1, 0.1, 2.0]
         test_ss_mlp(mlp_params=mlp_params, sgd_params=sgd_params, \
-                su_count=su_count, rng_seed=test_num)
+                su_count=su_count, rng_seed=5*test_num)
     return 1
 
 def test_ss_mlp_pt(mlp_params=False, sgd_params=False, su_count=1000):
@@ -295,7 +295,10 @@ if __name__ == '__main__':
     #test_dropout_ala_original()
 
     # Run a single test for measuring semisupervised performance
-    test_ss_mlp(sgd_params=False, mlp_params=False, su_count=1000, rng_seed=1248)
+    #test_ss_mlp(sgd_params=False, mlp_params=False, su_count=3000, rng_seed=666)
+
+    # Run a single test for measuring semisupervised performance
+    batch_test_ss_mlp(test_count=10, su_count=3000)
 
     # Run a test of denoising autoencoder training
     #test_dae(dae_layer=0, mlp_params=False, sgd_params=False)

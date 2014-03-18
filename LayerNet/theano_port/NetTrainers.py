@@ -359,10 +359,12 @@ def train_ss_mlp(
     # build the expressions for the cost functions. if training without sde or
     # dev regularization, the dev loss/cost will be used, but the weights for
     # dev regularization on each layer will be set to 0 before training.
-    sde_cost = NET.sde_cost(y)
-    dev_cost = NET.dev_cost(y)
+    g1_cost = 0.1 * NET.grad_losses[-1][0]
+    g2_cost = 0.1 * NET.grad_losses[-1][1]
+    sde_cost = NET.sde_cost(y) #+ g1_cost + g2_cost
+    dev_cost = NET.dev_cost(y) #+ g1_cost + g2_cost
     NET_metrics = [NET.class_errors(y), NET.raw_class_loss(y), \
-                   NET.dev_reg_loss(y), NET.raw_reg_loss]
+                   NET.dev_reg_loss(y), NET.raw_reg_loss] #, g1_cost, g2_cost]
 
     ############################################################################
     # compile testing and validation models. these models are evaluated on     #
@@ -491,6 +493,8 @@ def train_ss_mlp(
         ######################################################
         epoch_counter = epoch_counter + 1
         epoch_metrics = [0. for v in epoch_metrics]
+        # Set to training mode
+        NET.set_bias_noise(0.15)
         for b_idx in xrange(tr_batches):
             # compute update for some this minibatch
             if ((epoch_counter <= 0) or (mlp_type == 'sde')):
@@ -511,6 +515,8 @@ def train_ss_mlp(
         ######################################################
         # validation, testing, and general diagnostic stuff. #
         ######################################################
+        # Set to testing mode
+        NET.set_bias_noise(0.0)
         # compute metrics on validation set
         validation_metrics = [0. for v in epoch_metrics]
         for b_idx in xrange(va_batches):
@@ -544,6 +550,9 @@ def train_ss_mlp(
         print "epoch {0:d}: t_err={1:.2f}, t_loss={2:.4f}, t_dev={3:.4f}, t_reg={4:.4f}, valid={5:.2f}{6}".format( \
                 epoch_counter, epoch_metrics[0], epoch_metrics[1], epoch_metrics[2], epoch_metrics[3], \
                 validation_error, tag)
+        #print "epoch {0:d}: t_err={1:.2f}, t_loss={2:.4f}, t_dev={3:.4f}, t_g1={4:.6f}, t_g2={5:.6f}, valid={6:.2f}{7}".format( \
+        #        epoch_counter, epoch_metrics[0], epoch_metrics[1], epoch_metrics[2], epoch_metrics[4], \
+        #        epoch_metrics[5], validation_error, tag)
         print "--time: {0:.4f}".format((time.clock() - e_time))
         e_time = time.clock()
         # save first layer weights to an image locally

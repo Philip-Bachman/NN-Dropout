@@ -11,3 +11,5 @@
 *.pkl.gz
 *.png
 *.pyc
+/LayerNet/theano_port/test_results/*
+/LayerNet/theano_port/datasets/*
