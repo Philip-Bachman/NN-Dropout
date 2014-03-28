@@ -67,7 +67,7 @@ def train_mlp(
     print "dataset info:"
     print "  training samples: {0:d}".format(tr_samples)
     print "  samples/minibatch: {0:d}, minibatches/epoch: {1:d}".format( \
-            tr_samples, tr_batches)
+            batch_size, tr_batches)
     print "  validation samples: {0:d}, testing samples: {1:d}".format( \
             va_samples, te_samples)
 
@@ -214,6 +214,7 @@ def train_mlp(
         ######################################################
         # process some number of minibatches for this epoch. #
         ######################################################
+        NET.set_bias_noise(0.1)
         epoch_counter = epoch_counter + 1
         epoch_metrics = [0. for v in epoch_metrics]
         for b_idx in xrange(tr_batches):
@@ -234,6 +235,7 @@ def train_mlp(
         ######################################################
         # validation, testing, and general diagnostic stuff. #
         ######################################################
+        NET.set_bias_noise(0.0)
         # compute metrics on validation set
         validation_metrics = [0. for v in epoch_metrics]
         for b_idx in xrange(va_batches):
@@ -359,12 +361,11 @@ def train_ss_mlp(
     # build the expressions for the cost functions. if training without sde or
     # dev regularization, the dev loss/cost will be used, but the weights for
     # dev regularization on each layer will be set to 0 before training.
-    g1_cost = 0.1 * NET.grad_losses[-1][0]
-    g2_cost = 0.1 * NET.grad_losses[-1][1]
-    sde_cost = NET.sde_cost(y) #+ g1_cost + g2_cost
-    dev_cost = NET.dev_cost(y) #+ g1_cost + g2_cost
+    g1_loss = 2.0 * NET.grad_losses[-1][0]
+    sde_cost = NET.sde_cost(y) #+ g1_loss
+    dev_cost = NET.dev_cost(y) #+ g1_loss
     NET_metrics = [NET.class_errors(y), NET.raw_class_loss(y), \
-                   NET.dev_reg_loss(y), NET.raw_reg_loss] #, g1_cost, g2_cost]
+                   NET.dev_reg_loss(y), NET.raw_reg_loss]
 
     ############################################################################
     # compile testing and validation models. these models are evaluated on     #
@@ -408,7 +409,7 @@ def train_ss_mlp(
 
     # use a "smoothed" learning rate, to ease into optimization
     gentle_rate = ifelse(epoch < 5,
-            (epoch / 5.) * learning_rate,
+            ((epoch / 5.)**2.) * learning_rate,
             learning_rate)
 
     # update the step direction using a momentus update
@@ -491,10 +492,10 @@ def train_ss_mlp(
         ######################################################
         # process some number of minibatches for this epoch. #
         ######################################################
+        # Set to training mode
+        NET.set_bias_noise(0.2)
         epoch_counter = epoch_counter + 1
         epoch_metrics = [0. for v in epoch_metrics]
-        # Set to training mode
-        NET.set_bias_noise(0.15)
         for b_idx in xrange(tr_batches):
             # compute update for some this minibatch
             if ((epoch_counter <= 0) or (mlp_type == 'sde')):
@@ -550,9 +551,6 @@ def train_ss_mlp(
         print "epoch {0:d}: t_err={1:.2f}, t_loss={2:.4f}, t_dev={3:.4f}, t_reg={4:.4f}, valid={5:.2f}{6}".format( \
                 epoch_counter, epoch_metrics[0], epoch_metrics[1], epoch_metrics[2], epoch_metrics[3], \
                 validation_error, tag)
-        #print "epoch {0:d}: t_err={1:.2f}, t_loss={2:.4f}, t_dev={3:.4f}, t_g1={4:.6f}, t_g2={5:.6f}, valid={6:.2f}{7}".format( \
-        #        epoch_counter, epoch_metrics[0], epoch_metrics[1], epoch_metrics[2], epoch_metrics[4], \
-        #        epoch_metrics[5], validation_error, tag)
         print "--time: {0:.4f}".format((time.clock() - e_time))
         e_time = time.clock()
         # save first layer weights to an image locally

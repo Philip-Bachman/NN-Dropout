@@ -11,6 +11,9 @@ import theano.tensor.shared_randomstreams
 
 from output_losses import MCL2HingeSS
 
+#####################################################################
+# NON-LINEARITIES: Some activation functions, for your convenience. #
+#####################################################################
 
 def row_normalize(x):
     """Normalize rows of matrix x to unit (L2) length."""
@@ -29,6 +32,17 @@ def relu_actfun(x):
     x_relu = T.maximum(0., x)
     return x_relu
 
+def safe_softmax(x):
+    """Softmax that shouldn't overflow."""
+    e_x = T.exp(x - T.max(x, axis=1, keepdims=True))
+    x_sm = e_x / T.sum(e_x, axis=1, keepdims=True)
+    return x_sm
+
+################################################################################
+# HIDDEN LAYER IMPLEMENTATIONS: We've implemented a standard feedforward layer #
+# with non-linear activation transform and a max-pooling (a.k.a. Maxout) layer #
+# which is currently fixed to operate over disjoint pools of linear filters.   #
+################################################################################
 
 class HiddenLayer(object):
     def __init__(self, rng, input, n_in, n_out, \
@@ -63,7 +77,7 @@ class HiddenLayer(object):
                 size=(n_in, n_out)), dtype=theano.config.floatX)
             W = theano.shared(value=W_init, name='W')
         if b is None:
-            b_init = np.zeros((n_out,), dtype=theano.config.floatX) + 0.
+            b_init = np.zeros((n_out,), dtype=theano.config.floatX)
             b = theano.shared(value=b_init, name='b')
 
         # Set layer weights and biases, rescaled to account for dropping
@@ -104,12 +118,106 @@ class HiddenLayer(object):
     def _drop_from_input(self, input, p):
         """p is the probability of dropping elements of input."""
         # p=1-p because 1's indicate keep and p is prob of dropping
-        drop_mask = self.srng.binomial(n=1, p=1-p, size=input.shape, \
-                dtype=theano.config.floatX)
+        drop_mask = self.srng.binomial(n=1, p=1-p, size=input.shape, dtype=theano.config.floatX)
         # Cast mask from int to float32, to keep things on GPU
         droppy_input = input * drop_mask
         return droppy_input
 
+    def set_bias_noise(self, noise_lvl=0.):
+        """Set stdev of noise on the biases for this layer."""
+        self.noise_std.set_value(noise_lvl)
+        return 1
+
+class MPLayer(object):
+    """Max-pooling over disjoint sets of linear filters (a.k.a. Maxout)..."""
+    def __init__(self, rng, input, n_in, n_out, \
+                 pool_size, drop_rate=0., \
+                 W=None, b=None, \
+                 use_bias=True):
+
+        # Setup a shared random generator for this layer
+        self.srng = theano.tensor.shared_randomstreams.RandomStreams( \
+                rng.randint(100000))
+
+        # Use either droppy or undropped input, as determined by drop_rate
+        if (drop_rate < 0.01):
+            self.input = input
+        else:
+            self.input = self._drop_from_input(input, drop_rate)
+
+        # Set some basic layer properties
+        self.in_dim = n_in
+        self.out_dim = n_out
+        self.pool_size = pool_size
+        self.noise_std = theano.shared(value=np.asarray(0.0, \
+                dtype=theano.config.floatX), name='noise_std')
+
+        # Get some random initial weights and biases, if not given
+        if W is None:
+            W_init = np.asarray(0.01 * rng.standard_normal( \
+                size=(n_in, n_out*pool_size)), dtype=theano.config.floatX)
+            W = theano.shared(value=W_init, name='W')
+        if b is None:
+            b_init = np.zeros((1, n_out*pool_size), dtype=theano.config.floatX)
+            b = theano.shared(value=b_init, name='b')
+
+        # Set layer weights and biases, rescaled to account for dropping
+        self.W = W if (drop_rate < 0.01) else ((1. / (1-drop_rate)) * W)
+        self.b = b
+
+        # Compute linear "pre-activation" for this layer
+        if use_bias:
+            self.linear_output = T.dot(self.input, self.W) + self.b
+        else:
+            self.linear_output = T.dot(self.input, self.W)
+        # Get a "fuzzy" version of the linear output, with the degree of fuzz
+        # determined by self.noise_std. For values of self.noise_std > 0, this
+        # may be a useful regularizer during learning. But, self.noise_std
+        # should probably be set to 0 at validation/test time.
+        self.noisy_linear = self.linear_output  + \
+                (self.noise_std * self.srng.normal(size=self.linear_output.shape, \
+                dtype=theano.config.floatX))
+
+        # Compute output of this layer by max-pooling over noisified linear
+        # filter responses.
+        #mp_acts = 0.
+        mp_acts = None
+        for i in xrange(self.out_dim):
+            if mp_acts is None:
+                mp_acts = self.noisy_linear[:,\
+                        (i*self.out_dim):(i*self.out_dim + self.pool_size)]
+            else:
+                mp_acts = T.maximum(mp_acts, self.noisy_linear[:,\
+                        (i*self.out_dim):(i*self.out_dim + self.pool_size)])
+        self.output = mp_acts
+
+        # Compute some sums of the activations, for regularizing
+        self.act_l2_sum = T.sum(self.output**2.) / self.output.size
+        self.act_l1_sum = T.sum(abs(row_normalize(self.output)))
+        self.inp_l1_sum = T.sum(abs(row_normalize(self.input)))
+
+        # Conveniently package layer parameters
+        if use_bias:
+            self.params = [self.W, self.b]
+        else:
+            self.params = [self.W]
+
+    def _drop_from_input(self, input, p):
+        """p is the probability of dropping elements of input."""
+        # p=1-p because 1's indicate keep and p is prob of dropping
+        drop_mask = self.srng.binomial(n=1, p=1-p, size=input.shape, dtype=theano.config.floatX)
+        # Cast mask from int to float32, to keep things on GPU
+        droppy_input = input * drop_mask
+        return droppy_input
+
+    def set_bias_noise(self, noise_lvl=0.):
+        """Set stdev of noise on the biases for this layer."""
+        self.noise_std.set_value(noise_lvl)
+        return 1
+
+##########################
+# NETWORK IMPLEMENTATION #
+##########################
 
 class SS_DEV_NET(object):
     """A multipurpose layer-based feedforward net.
@@ -206,11 +314,8 @@ class SS_DEV_NET(object):
         #self._construct_dae_layers(rng)
 
         # Build layers and functions for computing finite-differences-based
-        # regularization of functional curvature. This constructs a list of
-        # pairs self.grad_losses[i][0] and self.grad_losses[i][1] for each
-        # layer in self.mlp_layers. These each pair gives the 1st/2nd order
-        # stochastic approximation of gradient cost.
-        self._construct_grad_layers(rng, step_len=0.1)
+        # regularization of functional curvature.
+        self._construct_grad_layers(rng, lam_g1=0.1, lam_g2=0.0, step_len=0.2)
 
         # Use the negative log likelihood of the logistic regression layer of
         # the RAW net as the standard optimization objective.
@@ -227,24 +332,6 @@ class SS_DEV_NET(object):
         self.sde_reg_loss = lam_l2a * T.sum([lay.act_l2_sum for lay in self.dev_clones[0]])
         self.sde_cost = lambda y: (self.sde_class_loss(y) + self.sde_reg_loss)
 
-    def set_bias_noise(self, noise_std):
-        """Set bias "fuzzing" noise on the main MLP, DEV, and DAE nets."""
-        # Set noise in MLP layers
-        for layer in self.mlp_layers:
-            layer.noise_std.set_value(noise_std)
-        # Set noise in DEV layers
-        for dev_clone in self.dev_clones:
-            for layer in dev_clone:
-                layer.noise_std.set_value(noise_std)
-        # Set noise in DAE layers
-        #for dae_pair in self.raw_dae_layers:
-        #    dae_pair[0].noise_std.set_value(noise_std)
-        #    dae_pair[1].noise_std.set_value(noise_std)
-        #for dae_pair in self.sde_dae_layers:
-        #    dae_pair[0].noise_std.set_value(noise_std)
-        #    dae_pair[1].noise_std.set_value(noise_std)
-        return 1
-
     def dev_cost(self, y, joint_loss=1):
         """Wrapper for optimization with Theano."""
         dmr = self.dev_mix_rate
@@ -254,13 +341,23 @@ class SS_DEV_NET(object):
             dev_losses = []
             for i in range(self.layer_count):
                 if (i < (self.layer_count - 1)):
+                    # DEV loss at hidden layers
                     x1 = self.mlp_layers[i].output
                     x2 = self.dev_clones[0][i].output
                 else:
+                    # DEV loss at output layer
                     x1 = self.mlp_layers[i].linear_output
                     x2 = self.dev_clones[0][i].linear_output
                 dev_type = self.dev_types[i]
-                dev_losses.append(self.dev_lams[i] * self._dev_loss(x1, x2, y, dev_type))
+                if (dev_type == 5):
+                    dev_loss = (self.dev_lams[i] * self._dev_loss(x1, x2, y, dev_type)) + \
+                            ((0.1*self.dev_lams[i]) * self._ent_loss(x1, y, 1))
+                elif (dev_type == 4):
+                    dev_loss = (self.dev_lams[i] * self._dev_loss(x1, x2, y, dev_type)) + \
+                            ((0.1*self.dev_lams[i]) * self._ent_loss(x1, y, 0))
+                else:
+                    dev_loss = self.dev_lams[i] * self._dev_loss(x1, x2, y, dev_type)
+                dev_losses.append(dev_loss)
             reg_loss = T.sum(dev_losses) + (0.5 * (self.raw_reg_loss + self.sde_reg_loss))
         else:
             # Otherwise, use a standard feedforward MLP loss
@@ -295,19 +392,46 @@ class SS_DEV_NET(object):
         tanh_fun = lambda x1, x2: var_fun(T.tanh(x1), T.tanh(x2))
         norm_fun = lambda x1, x2: var_fun(row_normalize(x1), row_normalize(x2))
         sigm_fun = lambda x1, x2: var_fun(T.nnet.sigmoid(x1), T.nnet.sigmoid(x2))
-        cent_fun = lambda xt, xo: T.sum(T.nnet.binary_crossentropy( \
-                T.nnet.sigmoid(xo), T.nnet.sigmoid(xt))) / xt.shape[0]
+        bent_fun = lambda xt, xo: T.sum(ss_mask * T.nnet.binary_crossentropy( \
+                T.nnet.sigmoid(xo), T.nnet.sigmoid(xt))) / T.sum(ss_mask)
+        ment_fun = lambda xt, xo: T.sum(ss_mask * T.nnet.categorical_crossentropy( \
+                safe_softmax(xo), safe_softmax(xt))) / T.sum(ss_mask)
         if (dev_type == 1):
+            # Unit-normalized variance (like fake cosine distance)
             dev_fun = norm_fun
         elif (dev_type == 2):
+            # Tanh-transformed variance
             dev_fun = tanh_fun
         elif (dev_type == 3):
+            # Sigmoid-transformed variance
             dev_fun = sigm_fun
         elif (dev_type == 4):
-            dev_fun = cent_fun
+            # Binary cross-entropy
+            dev_fun = bent_fun
+        elif (dev_type == 5):
+            # Multinomial cross-entropy
+            dev_fun = ment_fun
         else:
             dev_fun = var_fun
         return dev_fun(X1, X2)
+
+    def _ent_loss(self, X, Y, ent_type=0):
+        """Compute the entropy regularizer. Either binary or multinomial."""
+        if not self.is_semisupervised:
+            ss_mask = T.neq(Y, -1).reshape((Y.shape[0], 1))
+        else:
+            ss_mask = T.eq(Y, 0).reshape((Y.shape[0], 1))
+        bent_fun = lambda x: T.sum((ss_mask * T.nnet.binary_crossentropy( \
+                T.nnet.sigmoid(x), T.nnet.sigmoid(x))) / T.sum(ss_mask))
+        ment_fun = lambda x: T.sum((ss_mask * T.nnet.categorical_crossentropy( \
+                safe_softmax(x), safe_softmax(x))) / T.sum(ss_mask))
+        if (ent_type == 0):
+            # Binary cross-entropy
+            ent_fun = bent_fun
+        else:
+            # Multinomial cross-entropy
+            ent_fun = ment_fun
+        return ent_fun(X)
 
     def _construct_dae_layers(self, rng, lam_l1=0.01, nz_lvl=0.25):
         """Build both dropless and droppy denoising autoencoders on top of
@@ -374,7 +498,7 @@ class SS_DEV_NET(object):
                     (sde_sparse_loss / dae_input.shape[0])] )
         return 1
 
-    def _construct_grad_layers(self, rng, step_len=0.1):
+    def _construct_grad_layers(self, rng, lam_g1=0., lam_g2=0., step_len=0.1):
         """Construct siamese networks for regularizing first and second order
         directional derivatives via stochastic finite differences."""
         self.left_layers = []
@@ -413,16 +537,21 @@ class SS_DEV_NET(object):
                 right_vals = self.right_layers[l_num].output
             else:
                 # Use the linear layer response (at output layer)
-                left_vals = self.left_layers[l_num].linear_output
-                center_vals = mlp_layer.linear_output
-                right_vals = self.right_layers[l_num].linear_output
+                left_vals = T.tanh(self.left_layers[l_num].linear_output)
+                center_vals = T.tanh(mlp_layer.linear_output)
+                right_vals = T.tanh(self.right_layers[l_num].linear_output)
             g1l_loss = T.sum(((left_vals - center_vals) / step_len)**2.)
             g1r_loss = T.sum(((right_vals - center_vals) / step_len)**2.)
-            g1_loss = (g1l_loss + g1r_loss) / 2.
+            g1_loss = (g1l_loss + g1r_loss) / (2. * center_vals.shape[0])
             g2_loss = T.sum(((left_vals + right_vals - (2. * center_vals)) \
-                    / step_len**2.)**2.)
-            self.grad_losses.append([(g1_loss / center_vals.shape[0]), \
-                    (g2_loss / center_vals.shape[0])])
+                    / step_len**2.)**2.) / center_vals.shape[0]
+            self.grad_losses.append([g1_loss, g2_loss])
+        return 1
+
+    def set_bias_noise(self, noise_lvl=0.):
+        """Set stochastic noise rate on the biases."""
+        for layer in self.mlp_layers:
+            layer.set_bias_noise(noise_lvl)
         return 1
 
     def _masking_noise(self, input, nz_lvl):

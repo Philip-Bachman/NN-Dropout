@@ -39,7 +39,7 @@ import theano
 import theano.tensor as T
 
 
-from load_data import load_umontreal_data
+from load_data import load_udm
 from utils import tile_raster_images
 from sys import stdout as stdout
 
@@ -175,9 +175,8 @@ class cA(object):
         element-wise product on the right axis
 
         """
-        return T.reshape(hidden * (1 - hidden),
-                         (self.n_batchsize, 1, self.n_hidden)) * T.reshape(
-                             W, (1, self.n_visible, self.n_hidden))
+        return T.reshape(hidden*(1-hidden), (self.n_batchsize,1,self.n_hidden)) * \
+                T.reshape(W, (1,self.n_visible,self.n_hidden))
 
     def get_reconstructed_input(self, hidden):
         """Computes the reconstructed input given the values of the
@@ -238,7 +237,7 @@ def test_cA(start_rate=0.01, decay_rate=1.0, training_epochs=20,
     :param dataset: path to the picked dataset
 
     """
-    datasets = load_umontreal_data(dataset)
+    datasets = load_udm(dataset,as_shared=True)
     train_set_x, train_set_y = datasets[0]
 
     learning_rate = theano.shared(numpy.asarray(start_rate,
@@ -258,7 +257,7 @@ def test_cA(start_rate=0.01, decay_rate=1.0, training_epochs=20,
     #        BUILDING THE MODEL        #
     ####################################
 
-    rng = numpy.random.RandomState(123)
+    rng = numpy.random.RandomState(12345)
 
     cae = cA(numpy_rng=rng, input=x,
             n_visible=(28 * 28), n_hidden=500, n_batchsize=batch_size)
@@ -325,7 +324,7 @@ def test_cA(start_rate=0.01, decay_rate=1.0, training_epochs=20,
 
 
 if __name__ == '__main__':
-    test_cA(start_rate=0.01, decay_rate=0.97, training_epochs=50, \
+    test_cA(start_rate=0.01, decay_rate=0.98, training_epochs=50, \
             dataset='./data/mnist.pkl.gz', \
             batch_size=50, output_folder='CAE_results', contraction_level=0.1)
 

@@ -29,9 +29,9 @@ def _shared_dataset(data_xy):
 def load_mnist(path):
     mnist = np.load(path)
     train_set_x = mnist['train_data']
-    train_set_y = mnist['train_labels']
+    train_set_y = mnist['train_labels'] + 1
     test_set_x = mnist['test_data']
-    test_set_y = mnist['test_labels']
+    test_set_y = mnist['test_labels'] + 1
 
     train_set_x, train_set_y = _shared_dataset((train_set_x, train_set_y))
     test_set_x, test_set_y = _shared_dataset((test_set_x, test_set_y))
@@ -82,8 +82,9 @@ def load_udm_ss(dataset, sup_count, rng):
     Ytr_su = np.vstack(Ytr_su)
     Xtr_un = np.vstack(Xtr_un)
     Ytr_un = np.vstack(Ytr_un)
-    Xtr_un = np.vstack([Xtr_un, Xtr_su])
-    Ytr_un = 0 * np.vstack([Ytr_un, Ytr_su])
+    # Also keep "unsupervised" copies of the "supervised" data
+    Xtr_un = Xtr_un #np.vstack([Xtr_un, Xtr_su])
+    Ytr_un = 0 * Ytr_un #np.vstack([Ytr_un, Ytr_su])
 
     # Shuffle the rows so that observations are not grouped by class
     shuf_idx = rng.permutation(Xtr_su.shape[0])
@@ -130,11 +131,10 @@ def load_udm(dataset, as_shared=True):
     #np.ndarray of 1 dimensions (vector)) that have the same length as
     #the number of rows in the input. It should give the target
     #target to the example with the same index in the input.
-
     if as_shared:
-        test_set_x, test_set_y = _shared_dataset(test_set)
-        valid_set_x, valid_set_y = _shared_dataset(valid_set)
-        train_set_x, train_set_y = _shared_dataset(train_set)
+        test_set_x, test_set_y = _shared_dataset((test_set[0],test_set[1]+1))
+        valid_set_x, valid_set_y = _shared_dataset((valid_set[0],valid_set[1]+1))
+        train_set_x, train_set_y = _shared_dataset((train_set[0],train_set[1]+1))
     else:
         test_set_x, test_set_y = test_set
         valid_set_x, valid_set_y = valid_set
