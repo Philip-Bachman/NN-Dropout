@@ -30,13 +30,10 @@ classdef LDNet < handle
         drop_input
         % drop_hidden gives the drop rate for hidden layers
         drop_hidden
-        % drop_undrop gives the fraction of training examples to not apply any
-        % dropping to
+        % drop_undrop gives the fraction of training examples to "undrop"
         drop_undrop
         % do_dev tells whether to do DEV regularization or standard dropout
         do_dev
-        % dev_pre
-        dev_pre
     end % END PROPERTIES
     
     methods
@@ -67,7 +64,6 @@ classdef LDNet < handle
             self.drop_hidden = 0.5;
             self.drop_undrop = 0;
             self.do_dev = 0;
-            self.dev_pre = 0;
             self.dev_types = ones(1,self.layer_count);
             self.dev_lams = zeros(1,self.layer_count);
             return
@@ -496,17 +492,10 @@ classdef LDNet < handle
             % Compute loss and gradient due to Dropout Ensemble Variance
             L_dev = 0;
             for i=1:self.layer_count,
-                if (self.dev_pre == 1)
-                    [Li dLdFi] = LDNet.drop_loss(A_pre{i}, b_size, d_reps, ...
-                        self.dev_types(i), 0);
-                    L_dev = L_dev + (self.dev_lams(i) * Li);
-                    dLdA_pre{i} = dLdA_pre{i} + (self.dev_lams(i) * dLdFi);
-                else
-                    [Li dLdFi] = LDNet.drop_loss(A_post{i}, b_size, d_reps, ...
-                        self.dev_types(i), 0);
-                    L_dev = L_dev + (self.dev_lams(i) * Li);
-                    dLdA_post{i} = dLdA_post{i} + (self.dev_lams(i) * dLdFi);
-                end
+                [Li dLdFi] = LDNet.drop_loss(A_post{i}, b_size, d_reps, ...
+                    self.dev_types(i), 0);
+                L_dev = L_dev + (self.dev_lams(i) * Li);
+                dLdA_post{i} = dLdA_post{i} + (self.dev_lams(i) * dLdFi);
             end
             % Add loss and gradient for L2/L1 regularizers
             L_reg = 0;

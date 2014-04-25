@@ -290,7 +290,7 @@ def test_cA(start_rate=0.01, decay_rate=1.0, training_epochs=20,
         stdout.flush()
         for batch_index in xrange(n_train_batches):
             c.append(train_cae(batch_index))
-            if ((batch_index % (n_train_batches / 30)) == 0):
+            if ((batch_index % (n_train_batches / 40)) == 0):
                 print ".",
                 stdout.flush()
         print " "
