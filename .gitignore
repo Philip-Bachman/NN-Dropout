@@ -1,5 +1,6 @@
 *.mat
 *.m~
+*.py~
 *.fig
 *.swp
 *.npy
