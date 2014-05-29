@@ -12,21 +12,25 @@ opts.do_draw = 1;
 opts.lam_l2 = 0;
 opts.rounds = 10000;
 opts.batch_size = 100;
-opts.dev_reps = 2;
-opts.do_validate = 1;
-opts.Xv = Xte;
-opts.Yv = Yte;
+opts.dev_reps = 2; % experimental, only matters if LDN.do_dev ~= 1
+opts.do_validate = 1; % whether to check loss on validation sample
+opts.Xv = Xte; % validation inputs
+opts.Yv = Yte; % validation outputs
 
+% Init a network, given a list of layer sizes, a hidden layer activation and
+% a loss function to optimize (set loss to loss_lsq for regression.
 LDN = LDNet([size(Xtr,2) 800 800 size(Ytr,2)], @LDLayer.relu_trans, @LDNet.loss_mcl2h);
-LDN.lam_l2a = [0.0 0.0 0.0];
+LDN.lam_l2a = [0.0 0.0 0.0]; % L2 regularization on per-layer activations
+LDN.wt_bnd = 2.0; % L2 constraint on weights into each hidden node
+LDN.drop_input = 0.2; % drop rate at input layer
+LDN.drop_hidden = 0.5; % drop rate at hidden layers
+LDN.drop_undrop = 0.0; % rate to pass samples drop-free
+% These are experimental regularizer params, probably best left at 0
 LDN.dev_lams = [0.0 0.0 0.0];
 LDN.dev_types = [1 1 2];
-LDN.drop_input = 0.2;
-LDN.drop_hidden = 0.5;
-LDN.drop_undrop = 0.0;
 LDN.do_dev = 0;
 LDN.dev_pre = 0;
-LDN.wt_bnd = 2.0;
+% Initialize network weights and biases
 LDN.init_weights(0.1,0.01);
 
 % Set core learning params and train a bit
