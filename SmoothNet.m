@@ -429,6 +429,7 @@ classdef SmoothNet < handle
             lwts_norms = zeros(self.depth-1,params.rounds);
             max_sratio = zeros(self.depth-1,params.rounds);
             max_ratios = zeros(1,params.rounds);
+            round_loss = zeros(1,params.rounds);
             % Run update loop
             fprintf('Updating weights (%d rounds):\n', params.rounds);
             for e=1:params.rounds,
@@ -443,7 +444,8 @@ classdef SmoothNet < handle
                 % Compute activations for center points
                 [acts_g mask_g] = self.feedforward(Xg, l_weights, 1);
                 % Get general per-node loss and grads for the "true" points
-                dNc_gnrl = self.bprop_gnrl(acts_g, Yg);
+                [dNc_gnrl L_gnrl] = self.bprop_gnrl(acts_g, Yg);
+                round_loss(e) = mean(L_gnrl(:));
                 % Backprop per-node gradients for general loss
                 dLdW = self.backprop(acts_g, l_weights, dNc_gnrl, mask_g);
                 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -502,7 +504,7 @@ classdef SmoothNet < handle
                 end
                 max_ratios(e) = max(max_sratio(:,e));
                 if (e > 50)
-                    plot(1:e,max_ratios(1:e));
+                    plot(1:e,round_loss(1:e));
                     drawnow();
                 end
                 % Apply updates to inter-layer weights

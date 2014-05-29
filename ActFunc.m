@@ -347,7 +347,7 @@ classdef ActFunc < handle
             % Outputs:
             %   cur_acts: activations at current layer (obs_count x cur_dim)
             %
-            EPS = 1e-8;
+            EPS = 1e-3;
             cur_acts = pre_acts * pre_weights;
             cur_acts = bsxfun(@max, cur_acts, 0);
             quad_mask = bsxfun(@lt, cur_acts, 0.5);
@@ -379,20 +379,23 @@ classdef ActFunc < handle
             %   dLdF: gradients w.r.t pre-transform node activations at current
             %         layer (obs_count x cur_dim)
             %
-            EPS = 1e-8;
+            EPS = 1e-3;
             F = pre_acts * pre_weights;
             F = bsxfun(@max, F, 0);
             quad_mask = bsxfun(@lt, F, 0.5);
             line_mask = bsxfun(@ge, F, 0.5);
             A1 = (quad_mask .* F.^2) + ...
                 (line_mask .* (F - 0.25));
-            A1_norms = sqrt(sum(A1.^2,2) + EPS);
+            A1N = sqrt(sum(A1.^2,2) + EPS);
+            A2 = bsxfun(@rdivide, A1, A1N);
             % Compute 
             dA1dF = 2*(quad_mask .* F) + line_mask;
-            dA2dA1 = ...
-                bsxfun(@rdivide, bsxfun(@minus,A1_norms.^2,A1), A1_norms.^3);
             dLdA2 = (post_grads * post_weights') + act_grads;
-            dLdF = dLdA2 .* (dA2dA1 .* dA1dF);
+            V = dLdA2 .* A1;
+            V = sum(V, 2);
+            dLdA1 = bsxfun(@rdivide, dLdA2, A1N) - ...
+                bsxfun(@times, A2, (V ./ (A1N.^2.0)));
+            dLdF = dLdA1 .* dA1dF;
             return
         end
 
