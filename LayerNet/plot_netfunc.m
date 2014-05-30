@@ -3,10 +3,8 @@ function [ fig ] = plot_netfunc( X, Y, net, grid_res, grid_buffer, fig )
 
 assert((size(X,2) == 2), 'Inputs in X must be 2d.');
 assert((size(Y,2) == 1), 'Outputs in Y must be 1d.');
-assert((net.layer_sizes(1) == 2), 'net must take 2d inputs.');
-assert((net.layer_sizes(end) == 1), 'net must make 1d outputs.');
-
-
+assert((net.layers{1}.dim_input == 3), 'net must take 2d inputs (+ a bias).');
+assert((net.layers{end}.dim_output == 1), 'net must make 1d outputs.');
 
 % Compute the extremal coordinates of the evaluation grid
 x_min = min(X(:,1)) - grid_buffer;

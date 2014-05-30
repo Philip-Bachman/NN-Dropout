@@ -42,7 +42,7 @@ classdef ActFunc < handle
         end
         
         function [ node_grads ] = backprop(self, post_grads, post_weights,...
-                pre_values, pre_weights, act_grads)
+                pre_values, pre_weights, act_grads, act_masks)
             % Backpropagate gradients through some activation function
             %
             % BP functions take the following arguments:
@@ -56,6 +56,8 @@ classdef ActFunc < handle
             %                current layer's nodes. size: (pre_dim x cur_dim)
             %   act_grads: gradients directly on the post-transform activations
             %              at the current layer's nodes.
+            %   act_masks: dropout masks that were applied to activations
+            %
             obs_count = size(post_grads,1);
             cur_dim = max(size(pre_weights,2),size(post_weights,1));
             if ~exist('act_grads','var')
@@ -64,25 +66,25 @@ classdef ActFunc < handle
             switch self.func_type
                 case 1
                     node_grads = ActFunc.linear_bp(post_grads, post_weights,...
-                        pre_values, pre_weights, act_grads);
+                        pre_values, pre_weights, act_grads, act_masks);
                 case 2
                     node_grads = ActFunc.sigmoid_bp(post_grads, post_weights,...
-                        pre_values, pre_weights, act_grads);
+                        pre_values, pre_weights, act_grads, act_masks);
                 case 3
                     node_grads = ActFunc.tanh_bp(post_grads, post_weights,...
-                        pre_values, pre_weights, act_grads);
+                        pre_values, pre_weights, act_grads, act_masks);
                 case 4
                     node_grads = ActFunc.logexp_bp(post_grads, post_weights,...
-                        pre_values, pre_weights, act_grads);
+                        pre_values, pre_weights, act_grads, act_masks);
                 case 5
                     node_grads = ActFunc.relu_bp(post_grads, post_weights,...
-                        pre_values, pre_weights, act_grads);
+                        pre_values, pre_weights, act_grads, act_masks);
                 case 6
                     node_grads = ActFunc.rehu_bp(post_grads, post_weights,...
-                        pre_values, pre_weights, act_grads);
+                        pre_values, pre_weights, act_grads, act_masks);
                 case 7
-                    node_grads = ActFunc.norm_rehu_bp(post_grads,...
-                        post_weights, pre_values, pre_weights, act_grads);
+                    node_grads = ActFunc.norm_rehu_bp(post_grads, post_weights,...
+                        pre_values, pre_weights, act_grads, act_masks);
                 otherwise
                     error('No valid activation function type selected.');
             end
@@ -108,7 +110,7 @@ classdef ActFunc < handle
         end
         
         function [ dLdF ] = linear_bp(post_grads, post_weights, ...
-                pre_acts, pre_weights, act_grads)
+                pre_acts, pre_weights, act_grads, act_masks)
             % Compute the gradients w.r.t. the pre-transform activations at all
             % nodes in the current layer.
             % 
@@ -123,13 +125,14 @@ classdef ActFunc < handle
             %                current layer (pre_dim x cur_dim)
             %   act_grads: direct loss gradients on post-transform activations
             %              for each node in current layer (obs_count x cur_dim)
+            %   act_masks: dropout masks applied to activations
             % Outputs:
             %   dLdF: gradients w.r.t pre-transform node activations at current
             %         layer (obs_count x cur_dim)
             %
             dLdA = (post_grads * post_weights') + act_grads;
             dAdF = 1;
-            dLdF = dLdA .* dAdF;
+            dLdF = (dLdA .* act_masks) .* dAdF;
             return
         end
         
@@ -147,7 +150,7 @@ classdef ActFunc < handle
         end
         
         function [ dLdF ] = sigmoid_bp(post_grads, post_weights, ...
-                pre_acts, pre_weights, act_grads)
+                pre_acts, pre_weights, act_grads, act_masks)
             % Compute the gradients w.r.t. the pre-transform activations at all
             % nodes in the current layer.
             % 
@@ -162,6 +165,7 @@ classdef ActFunc < handle
             %                current layer (pre_dim x cur_dim)
             %   act_grads: direct loss gradients on post-transform activations
             %              for each node in current layer (obs_count x cur_dim)
+            %   act_masks: dropout masks applied to activations
             % Outputs:
             %   dLdF: gradients w.r.t pre-transform node activations at current
             %         layer (obs_count x cur_dim)
@@ -169,7 +173,7 @@ classdef ActFunc < handle
             e_mx = exp(-pre_acts * pre_weights);
             dLdA = (post_grads * post_weights') + act_grads;
             dAdF = e_mx ./ (1 + e_mx).^2;
-            dLdF = dLdA .* dAdF;
+            dLdF = (dLdA .* act_masks) .* dAdF;
             return
         end
         
@@ -187,7 +191,7 @@ classdef ActFunc < handle
         end
         
         function [ dLdF ] = tanh_bp(post_grads, post_weights, ...
-                pre_acts, pre_weights, act_grads)
+                pre_acts, pre_weights, act_grads, act_masks)
             % Compute the gradients w.r.t. the pre-transform activations at all
             % nodes in the current layer.
             % 
@@ -202,13 +206,14 @@ classdef ActFunc < handle
             %                current layer (pre_dim x cur_dim)
             %   act_grads: direct loss gradients on post-transform activations
             %              for each node in current layer (obs_count x cur_dim)
+            %   act_masks: dropout masks applied to activations
             % Outputs:
             %   dLdF: gradients w.r.t pre-transform node activations at current
             %         layer (obs_count x cur_dim)
             %
             dAdF = 1 - (tanh(pre_acts * pre_weights)).^2;
             dLdA = (post_grads * post_weights') + act_grads;
-            dLdF = dLdA .* dAdF;
+            dLdF = (dLdA .* act_masks) .* dAdF;
             return
         end
         
@@ -226,7 +231,7 @@ classdef ActFunc < handle
         end
         
         function [ dLdF ] = logexp_bp(post_grads, post_weights, ...
-                pre_acts, pre_weights, act_grads)
+                pre_acts, pre_weights, act_grads, act_masks)
             % Compute the gradients w.r.t. the pre-transform activations at all
             % nodes in the current layer.
             % 
@@ -241,6 +246,7 @@ classdef ActFunc < handle
             %                current layer (pre_dim x cur_dim)
             %   act_grads: direct loss gradients on post-transform activations
             %              for each node in current layer (obs_count x cur_dim)
+            %   act_masks: dropout masks applied to activations
             % Outputs:
             %   dLdF: gradients w.r.t pre-transform node activations at current
             %         layer (obs_count x cur_dim)
@@ -248,7 +254,7 @@ classdef ActFunc < handle
             exp_vals = exp(pre_acts * pre_weights);
             dAdF = exp_vals ./ (exp_vals + 1);
             dLdA = (post_grads * post_weights') + act_grads;
-            dLdF = dLdA .* dAdF;
+            dLdF = (dLdA .* act_masks) .* dAdF;
             return
         end
         
@@ -267,7 +273,7 @@ classdef ActFunc < handle
         end
         
         function [ dLdF ] = relu_bp(post_grads, post_weights, ...
-                pre_acts, pre_weights, act_grads)
+                pre_acts, pre_weights, act_grads, act_masks)
             % Compute the gradients w.r.t. the pre-transform activations at all
             % nodes in the current layer.
             % 
@@ -282,13 +288,14 @@ classdef ActFunc < handle
             %                current layer (pre_dim x cur_dim)
             %   act_grads: direct loss gradients on post-transform activations
             %              for each node in current layer (obs_count x cur_dim)
+            %   act_masks: dropout masks applied to activations
             % Outputs:
             %   dLdF: gradients w.r.t pre-transform node activations at current
             %         layer (obs_count x cur_dim)
             %
             dAdF = (pre_acts * pre_weights) > 0;
             dLdA = (post_grads * post_weights') + act_grads;
-            dLdF = dLdA .* dAdF;
+            dLdF = (dLdA .* act_masks) .* dAdF;
             return
         end
         
@@ -311,7 +318,7 @@ classdef ActFunc < handle
         end
         
         function [ dLdF ] = rehu_bp(post_grads, post_weights, ...
-                pre_acts, pre_weights, act_grads)
+                pre_acts, pre_weights, act_grads, act_masks)
             % Compute the gradients w.r.t. the pre-transform activations at all
             % nodes in the current layer.
             % 
@@ -326,6 +333,7 @@ classdef ActFunc < handle
             %                current layer (pre_dim x cur_dim)
             %   act_grads: direct loss gradients on post-transform activations
             %              for each node in current layer (obs_count x cur_dim)
+            %   act_masks: dropout masks applied to activations
             % Outputs:
             %   dLdF: gradients w.r.t pre-transform node activations at current
             %         layer (obs_count x cur_dim)
@@ -334,7 +342,7 @@ classdef ActFunc < handle
             dAdF = 2 * dAdF;
             dAdF(dAdF > 1) = 1;
             dLdA = (post_grads * post_weights') + act_grads;
-            dLdF = dLdA .* dAdF;
+            dLdF = (dLdA .* act_masks) .* dAdF;
             return
         end
         
@@ -360,7 +368,7 @@ classdef ActFunc < handle
         end
         
         function [ dLdF ] = norm_rehu_bp(post_grads, post_weights, ...
-                pre_acts, pre_weights, act_grads)
+                pre_acts, pre_weights, act_grads, act_masks)
             % Compute the gradients w.r.t. the pre-transform activations at all
             % nodes in the current layer.
             % 
@@ -375,6 +383,7 @@ classdef ActFunc < handle
             %                current layer (pre_dim x cur_dim)
             %   act_grads: direct loss gradients on post-transform activations
             %              for each node in current layer (obs_count x cur_dim)
+            %   act_masks: dropout masks applied to activations
             % Outputs:
             %   dLdF: gradients w.r.t pre-transform node activations at current
             %         layer (obs_count x cur_dim)
@@ -391,6 +400,7 @@ classdef ActFunc < handle
             % Compute 
             dA1dF = 2*(quad_mask .* F) + line_mask;
             dLdA2 = (post_grads * post_weights') + act_grads;
+            dLdA2 = dLdA2 .* act_masks;
             V = dLdA2 .* A1;
             V = sum(V, 2);
             dLdA1 = bsxfun(@rdivide, dLdA2, A1N) - ...

@@ -104,57 +104,6 @@ classdef SmoothNet < handle
             return
         end
         
-        function [ drop_weights ] = get_drop_weights(self, add_noise)
-            % Effect random edge and/or node dropping by zeroing randomly
-            % selected weights between each adjacent pair of layers. Also, add
-            % some small white noise to weights prior to keeping/dropping.
-            if ~exist('add_noise','var')
-                add_noise = 0;
-            end
-            drop_weights = self.layer_weights;
-            for i=1:(self.depth-1),
-                post_weights = drop_weights{i};
-                pre_nodes = size(post_weights,1);
-                post_nodes = size(post_weights,2);
-                if (i == 1)
-                    if (self.drop_input > 1e-3)
-                        % Do dropout for input layer
-                        drop_nodes = randsample(pre_nodes, ...
-                            floor(pre_nodes * self.drop_input));
-                        node_mask = ones(pre_nodes,1);
-                        node_mask(drop_nodes) = 0;
-                        %node_mask = (rand(pre_nodes,1) > self.drop_input);
-                        edge_mask = bsxfun(@times,node_mask,ones(1,post_nodes));
-                        %edge_mask = rand(size(post_weights)) > self.drop_input;
-                        edge_mask(end,:) = 1;                        
-                    else
-                        edge_mask = ones(pre_nodes,post_nodes);
-                    end
-                else
-                    if (self.drop_hidden > 1e-3)
-                        % Do dropout for hidden layer
-                        drop_nodes = randsample(pre_nodes, ...
-                            floor(pre_nodes * self.drop_hidden));
-                        node_mask = ones(pre_nodes,1);
-                        node_mask(drop_nodes) = 0;
-                        %node_mask = (rand(pre_nodes,1) > self.drop_hidden);
-                        edge_mask = bsxfun(@times,node_mask,ones(1,post_nodes));
-                        %edge_mask = rand(size(post_weights)) > self.drop_hidden;
-                        edge_mask(end,:) = 1;
-                    else
-                        edge_mask = ones(size(post_weights));
-                    end
-                end
-                if ((add_noise == 1) && (self.weight_noise > 1e-8))
-                    post_noise = self.weight_noise * randn(size(post_weights));
-                    drop_weights{i} = (post_weights + post_noise) .* edge_mask;
-                else
-                    drop_weights{i} = post_weights .* edge_mask;
-                end
-            end
-            return
-        end
-        
         function [ max_ord ] = max_order(self)
             % Determine the maximum order of penalized curvature based on
             % current self.layer_lams.
@@ -173,6 +122,19 @@ classdef SmoothNet < handle
             end
         end
         
+        function [ noisy_weights ] = get_noisy_weights(self, source_weights)
+            % Get a noise-perturbed copy of the weights in source_weights.
+            if ~exist('source_weights','var')
+                source_weights = self.layer_weights;
+            end
+            noisy_weights = cell(1, length(source_weights));
+            for i=1:length(source_weights),
+                W = source_weights{i};
+                noisy_weights{i} = W + (self.weight_noise * randn(size(W)));
+            end
+            return
+        end
+        
         function [ l_acts d_masks ] = feedforward(self, X, l_weights, do_drop)
             % Get per-layer activations for the observations in X, given the
             % weights in l_weights. If do_drop is 1, do mask-based dropping of
@@ -187,7 +149,7 @@ classdef SmoothNet < handle
             d_masks{1} = ones(size(X));
             if ((do_drop == 1) && (self.drop_input > 1e-8))
                 mask = rand(size(l_acts{1})) > self.drop_input;
-                d_masks{1} = mask;
+                d_masks{1} = (1 / (1 - self.drop_input)) * mask;
                 l_acts{1} = l_acts{1} .* mask;
             end
             for i=2:self.depth,
@@ -206,10 +168,11 @@ classdef SmoothNet < handle
                     % dropping at the output layer.
                     if ((i < self.depth) && (self.drop_hidden > 1e-8))
                         mask = rand(size(l_acts{i})) > self.drop_hidden;
-                        d_masks{i} = mask;
+                        d_masks{i} = (1 / (1 - self.drop_hidden)) * mask;
                         l_acts{i} = l_acts{i} .* mask;
                     end
                 end
+                    
             end
             return
         end
@@ -274,8 +237,7 @@ classdef SmoothNet < handle
                 % Compute pre-transform bp-ed gradients for each node in the 
                 % current layer.
                 cur_grads = func.backprop(nxt_grads, nxt_weights, ...
-                    prv_acts, prv_weights, act_grads);
-                cur_grads = cur_grads .* l_masks{l_num};
+                    prv_acts, prv_weights, act_grads, l_masks{l_num});
                 dN{l_num} = cur_grads;
                 if (l_num > 1)
                     % Compute gradients w.r.t. inter-layer connection weights
@@ -293,36 +255,12 @@ classdef SmoothNet < handle
             %
             % Note: the "feedforward(X, weights)" function can be used to
             %       evaluate this network with droppy/fuzzy weights.
-            out_acts = X;
-            for i=1:(self.depth-1),
-                % Select activation function for the current layer
-                if (i == self.depth-1)
-                    func = self.out_func;
-                else
-                    func = self.act_func;
-                end
-                % Get weights connecting current layer to previous layer
-                W = self.layer_weights{i};
-                if (i == 1)
-                    drop_rate = self.drop_input;
-                else
-                    drop_rate = self.drop_hidden;
-                end
-                if (abs(drop_rate - 0.5) < 0.1)
-                    % Halve the weights when net was trained with dropout rate
-                    % near 0.5 for hidden nodes, to approximate sampling from
-                    % the implied distribution over network architectures.
-                    % Weights for first layer are not halved, as they modulate
-                    % inputs from observed rather than hidden nodes.
-                    W = W .* 0.5;
-                end
-                % Compute activations at the current layer via feedforward
-                out_acts = func.feedforward(SmoothNet.bias(out_acts), W);
-            end
+            acts = self.feedforward(X, self.layer_weights, 0);
+            out_acts = acts{end};
             return
         end
         
-        function [ dN L ] = bprop_gnrl(self, A, Y)
+        function [ dN L ] = loss_grad_gnrl(self, A, Y)
             % Compute the loss and gradient incurred by the activations in A,
             % given the target outputs in Y.
             %
@@ -388,17 +326,17 @@ classdef SmoothNet < handle
             % Sample points for general loss
             [Xg Yg] = SmoothNet.sample_points(X, Y, 2000);
             % Compute activations for sampled points
-            acts_g = self.feedforward(Xg, l_weights);
+            acts_g = self.feedforward(Xg, l_weights, 1);
             % Compute general loss for sampled points
-            [dN_outl L_out] = self.bprop_gnrl(acts_g, Yg);
+            [dN_outl L_out] = self.loss_grad_gnrl(acts_g, Yg);
             if (self.max_olam() > 1e-10)
-                % Sample fd chains for cuvrvature loss
+                % Sample fd chains for curvature loss
                 [X_fd fd_lens] = SmoothNet.sample_fd_chains(X,...
                     2000, self.max_order(), (nn_len/2), (nn_len/4));
                 % Compute activations for points in each FD chain
                 acts_fd = cell(1,length(X_fd));
                 for i=1:length(X_fd),
-                    acts_fd{i} = self.feedforward(X_fd{i}, l_weights);
+                    acts_fd{i} = self.feedforward(X_fd{i}, l_weights, 0);
                 end
                 % Compute multi-order curvature gradients for the FD chains
                 [dN_fd L_fd] = self.bprop_fd(acts_fd, fd_lens);
@@ -413,6 +351,9 @@ classdef SmoothNet < handle
             % Do fully parameterized training for a SmoothNet
             if ~exist('params','var')
                 params = struct();
+            end
+            if ~isfield(params, 'lam_l2')
+                params.lam_l2 = 0.0;
             end
             params = SmoothNet.check_params(params);
             % Compute a length scale for gradient regularization.
@@ -434,20 +375,20 @@ classdef SmoothNet < handle
             fprintf('Updating weights (%d rounds):\n', params.rounds);
             for e=1:params.rounds,
                 % Get the droppy/fuzzy weights to use with this round
-                %l_weights = self.get_drop_weights(1);
-                l_weights = self.layer_weights;
+                l_weights = self.get_noisy_weights(self.layer_weights);
+                %l_weights = self.layer_weights;
                 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
                 % Sample points and do feedforward/backprop for general loss %
                 % on output layer and internal layers.                       %
                 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
                 [Xg Yg] = SmoothNet.sample_points(X, Y, batch_size);
-                % Compute activations for center points
-                [acts_g mask_g] = self.feedforward(Xg, l_weights, 1);
+                % Compute activations for some points
+                [acts_g masks_g] = self.feedforward(Xg, l_weights, 1);
                 % Get general per-node loss and grads for the "true" points
-                [dNc_gnrl L_gnrl] = self.bprop_gnrl(acts_g, Yg);
+                [dNc_gnrl L_gnrl] = self.loss_grad_gnrl(acts_g, Yg);
                 round_loss(e) = mean(L_gnrl(:));
                 % Backprop per-node gradients for general loss
-                dLdW = self.backprop(acts_g, l_weights, dNc_gnrl, mask_g);
+                dLdW = self.backprop(acts_g, l_weights, dNc_gnrl, masks_g);
                 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
                 % Sample FD chains and do feedforward/backprop for curvature  %
                 % regularization across multiple orders of curvature.         %
@@ -487,6 +428,7 @@ classdef SmoothNet < handle
                     % Get relevant current weights and proposed update
                     l_weights = self.layer_weights{l};
                     l_dLdW = dLdW{l};
+                    l_dLdW = l_dLdW + (params.lam_l2 * l_weights);
                     % Apply momentum transform
                     l_dLdW = (params.momentum * all_mom{l}) + ...
                         ((1 - params.momentum) * l_dLdW);
@@ -529,15 +471,19 @@ classdef SmoothNet < handle
                     [L_out L_curv] = ...
                         self.check_losses(X, Y, nn_len);
                     acc_t = self.check_acc(X,Y);
+                    loss_t = mean(L_out(:));
+                    curv_t = L_curv;
                     if (params.do_validate == 1)
-                        [Lv_out Lv_curv] = ...
+                        [L_out L_curv] = ...
                             self.check_losses(params.Xv,params.Yv,nn_len);
                         acc_v = self.check_acc(params.Xv,params.Yv);
+                        loss_v = mean(L_out(:));
+                        curv_v = L_curv;
                         fprintf('    %d: tr=(%.4f, %.4f, %.4f), te=(%.4f, %.4f, %.4f)\n',...
-                            e, L_out, L_curv, acc_t, Lv_out, Lv_curv, acc_v);
+                            e, loss_t, curv_t, acc_t, loss_v, curv_v, acc_v);
                     else
                         fprintf('    %d: t=(%.4f, %.4f, %.4f)\n',...
-                            e, L_out, L_curv, acc_t);
+                            e, loss_t, curv_t, acc_t);
                     end
                 end
             end
@@ -567,6 +513,8 @@ classdef SmoothNet < handle
             obs_count = size(Yh,1);
             cl_count = size(Y,2);
             [Y_max Y_idx] = max(Y,[],2);
+            % Compute safe(ish) softmax
+            Yh = bsxfun(@minus, Yh, max(Yh,[],2));
             P = bsxfun(@rdivide, exp(Yh), sum(exp(Yh),2));
             % Compute classification loss (deviance)
             p_idx = sub2ind(size(P), (1:obs_count)', Y_idx);
@@ -779,8 +727,8 @@ classdef SmoothNet < handle
             Xd = bsxfun(@rdivide, Xd, max(sqrt(sum(Xd.^2,2)),1e-8));
             if (strict_len ~= 1)
                 % Sample fd lengths from a scaled abs(normal) distribution
-                fd_lens = (fd_len/2) * abs(randn(size(Xd,1),1));
-                fd_lens = fd_lens + fd_len;
+                fd_lens = (fd_len / 2) * abs(randn(size(Xd,1),1));
+                fd_lens = fd_lens + (fd_len / 2);
             else
                 % Set fd lengths strictly (i.e. to a fixed value)
                 fd_lens = fd_len * ones(size(Xd,1),1);

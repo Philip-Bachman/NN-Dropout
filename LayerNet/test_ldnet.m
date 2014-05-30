@@ -19,9 +19,9 @@ opts.Yv = Yte; % validation outputs
 
 %%%%%%%%%%%%
 % Init a network, given a list of layer sizes, a hidden layer activation and
-% a loss function to optimize (set loss to loss_lsq for regression.
-LDN = LDNet([size(Xtr,2) 200 200 size(Ytr,2)], ...
-    @LDLayer.relu_trans, @LDNet.loss_lsq);
+% a loss function to optimize (set loss to loss_lsq for regression).
+LDN = LDNet([size(Xtr,2) 256 256 size(Ytr,2)], ...
+    @LDLayer.norm_rehu_trans, @LDNet.loss_mcl2h);
 LDN.lam_l2a = [0.0 0.0 0.0]; % L2 regularization on per-layer activations
 LDN.wt_bnd = 3.0; % L2 constraint on weights into each hidden node
 LDN.drop_input = 0.2; % drop rate at input layer

@@ -7,9 +7,12 @@ n = 2000
 r = RandStream('mrg32k3a','Seed',4);
 RandStream.setDefaultStream(r);
 x1= 2*rand(n,1)-1; x2= 2*rand(n,1)-1;
-ydata =  x1 - 0.5*x1.^2  + 0.1*(2*rand(n,1)-1);
+%ydata =  x1 - 0.5*x1.^2  + 0.1*(2*rand(n,1)-1);
+func = @( xin ) (xin(:,1) - (0.5*xin(:,1).^2) + 0.5*sin(3*xin(:,2)));
+noise = @( yin, scale ) (yin + scale*(2*rand(size(yin)) - 1));
 
 xdata = [x1 x2];
+ydata = noise(func(xdata), 0.1);
 
 Xtr = xdata(1:n/2,:); Ytr = ydata(1:n/2,:);
 Xte = xdata(n/2+1:n,:); Yte = ydata(n/2+1:n,:);
@@ -35,10 +38,10 @@ Xte = xdata(n/2+1:n,:); Yte = ydata(n/2+1:n,:);
 % NET.init_weights(s): Init weights using zero-mean Gaussian with stdev s. For
 %                      details on weight initialization, see SmoothNet.m
 %
-layer_dims = [size(Xtr,2) 50 size(Ytr,2)]; %** 50 hidden neurons
+layer_dims = [size(Xtr,2) 256 256 size(Ytr,2)]; %** 50 hidden neurons
 NET = SmoothNet(layer_dims, ActFunc(7), ActFunc(1));
 NET.out_loss = @(yh, y) SmoothNet.loss_lsq(yh, y); %** lsq loss func.
-NET.init_weights(0.15);
+NET.init_weights(0.05);
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Set whole-network regularization parameters %
@@ -65,7 +68,7 @@ NET.init_weights(0.15);
 % NET.drop_input: Drop rate parameter for nodes in input layer.
 %
 NET.weight_noise = 0.00;
-NET.drop_hidden = 0.0; %** 
+NET.drop_hidden = 0.5; %** 
 NET.drop_input = 0.00;
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -118,7 +121,7 @@ params.start_rate = 0.01;
 params.decay_rate = 0.2^(1 / params.rounds);
 params.momentum = 0.95;
 params.batch_size = 100;
-params.lam_l2 = 1e-5;
+params.lam_l2 = 1e-3;
 params.do_validate = 1;
 params.Xv = Xte;
 params.Yv = Yte;
@@ -132,7 +135,7 @@ NET.train(Xtr,Ytr,params);
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Plot function learned by the network %
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%plot_netfunc(Xte(1:200,:), Yte(1:200,:), NET, 150, 0.25);
+plot_netfunc(Xte(1:200,:), Yte(1:200,:), NET, 64, 0.25);
 
 
 

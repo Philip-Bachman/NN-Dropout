@@ -116,19 +116,17 @@ classdef LDLayer < handle
             % the pre and post transform values.
             A_pre = X * Wm';
             % Pass linear function outputs through self.act_trans.
-            A_post = self.act_trans(A_pre, 'ff');
+            A_post = self.act_trans(A_pre, 'ff', [], [], []);
             % Update timing info
             self.ff_evals = self.ff_evals + size(X,1);
             return
         end
         
-        function [ dLdW dLdX ] = ...
-                backprop(self, dLdA_post, dLdA_pre, A_post, X, Wm)
+        function [ dLdW dLdX ] = backprop(self, dLdA, A, X, Wm)
             % Backprop through the linear functions and post-linear transforms
             % for this layer.
             %
-            dAdF = self.act_trans(A_post, 'bp');
-            dLdF = (dLdA_post .* dAdF) + dLdA_pre;
+            dLdF = self.act_trans(A, 'bp', dLdA, X, Wm);
             % Compute gradients with respect to linear function parameters
             dLdW = dLdF' * X;
             % Compute gradients with respect to input matrix X
@@ -142,36 +140,36 @@ classdef LDLayer < handle
     
     methods (Static = true)
         
-        function [ F ] = tanh_trans(X, comp_type)
-            % Transform the elements of X by hypertangent.
+        function [ F ] = tanh_trans(X, comp_type, dLdA, Xin, Win)
+            % Transform the elements of X by hypertangent, or do backprop
             assert((strcmp(comp_type,'ff')||strcmp(comp_type,'bp')),'ff/bp?');
             if (strcmp(comp_type,'ff'))
                 % Do feedforward
                 F = tanh(X);
             else
                 % Do backprop
-                F = 1 - X.^2;
+                dAdF = 1 - X.^2;
+                F = dLdA .* dAdF;
             end
             return
         end
         
-        function [ F ] = relu_trans(X, comp_type)
-            % Leave the values in X unchanged. Or, backprop through the
-            % non-transform.
+        function [ F ] = relu_trans(X, comp_type, dLdA, Xin, Win)
+            % Transform the elements of X by ReLU, or do backprop
             assert((strcmp(comp_type,'ff')||strcmp(comp_type,'bp')),'ff/bp?');
             if (strcmp(comp_type,'ff'))
                 % Do feedforward
                 F = max(X, 0);
             else
                 % Do backprop
-                F = single(X > 0);
+                dAdF = single(X > 0);
+                F = dLdA .* dAdF;
             end
             return
         end
         
-        function [ F ] = rehu_trans(X, comp_type)
-            % Leave the values in X unchanged. Or, backprop through the
-            % non-transform.
+        function [ F ] = rehu_trans(X, comp_type, dLdA, Xin, Win)
+            % Transform the elements of X by ReHu, or do backprop
             assert((strcmp(comp_type,'ff')||strcmp(comp_type,'bp')),'ff/bp?');
             if (strcmp(comp_type,'ff'))
                 % Do feedforward
@@ -181,13 +179,50 @@ classdef LDLayer < handle
             else
                 % Do backprop
                 mask = (X < 0.25) & (X > 1e-10);
-                F = single(X > 0);
-                F(mask) = 2*sqrt(X(mask));
+                dAdF = single(X > 0);
+                dAdF(mask) = 2*sqrt(X(mask));
+                F = dLdA .* dAdF;
             end
             return
         end
         
-        function [ F ] = line_trans(X, comp_type)
+        function [ F ] = norm_rehu_trans(X, comp_type, dLdA2, Xin, Win)
+            % Transform the elements of X by normed ReHu, or do backprop
+            assert((strcmp(comp_type,'ff')||strcmp(comp_type,'bp')),'ff/bp?');
+            EPS = 1e-3;
+            if (strcmp(comp_type,'ff'))
+                % Do feedforward
+                cur_acts = X;
+                cur_acts = bsxfun(@max, cur_acts, 0);
+                quad_mask = bsxfun(@lt, cur_acts, 0.5);
+                line_mask = bsxfun(@ge, cur_acts, 0.5);
+                cur_acts = (quad_mask .* cur_acts.^2) + ...
+                    (line_mask .* (cur_acts - 0.25));
+                act_norms = sqrt(sum(cur_acts.^2,2) + EPS);
+                F = bsxfun(@rdivide, cur_acts, act_norms);
+            else
+                % Do backprop
+                F = Xin * Win';
+                F = bsxfun(@max, F, 0);
+                quad_mask = bsxfun(@lt, F, 0.5);
+                line_mask = bsxfun(@ge, F, 0.5);
+                A1 = (quad_mask .* F.^2) + ...
+                    (line_mask .* (F - 0.25));
+                A1N = sqrt(sum(A1.^2,2) + EPS);
+                A2 = bsxfun(@rdivide, A1, A1N);
+                % Compute 
+                dA1dF = 2*(quad_mask .* F) + line_mask;
+                V = dLdA2 .* A1;
+                V = sum(V, 2);
+                dLdA1 = bsxfun(@rdivide, dLdA2, A1N) - ...
+                    bsxfun(@times, A2, (V ./ (A1N.^2.0)));
+                F = dLdA1 .* dA1dF;
+            end
+            return
+        end
+            
+        
+        function [ F ] = line_trans(X, comp_type, dLdA, Xin, Win)
             % Leave the values in X unchanged. Or, backprop through the
             % non-transform.
             assert((strcmp(comp_type,'ff')||strcmp(comp_type,'bp')),'ff/bp?');
@@ -196,7 +231,8 @@ classdef LDLayer < handle
                 F = X;
             else
                 % Do backprop
-                F = ones(size(X),'single');
+                dAdF = ones(size(X),'single');
+                F = dLdA .* dAdF;
             end
             return
         end
