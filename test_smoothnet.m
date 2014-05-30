@@ -66,7 +66,7 @@ NET.init_weights(0.15);
 % NET.drop_input: Drop rate parameter for nodes in input layer.
 %
 NET.weight_noise = 0.00;
-NET.drop_rate = 0.00;
+NET.drop_hidden = 0.00;
 NET.drop_input = 0.00;
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -95,7 +95,7 @@ NET.drop_input = 0.00;
 for i=1:numel(layer_dims),
     NET.layer_lams(i).lam_l1 = 0;
     NET.layer_lams(i).lam_l2 = 0;
-    NET.layer_lams(i).wt_bnd = 10.0;
+    NET.layer_lams(i).l2_bnd = 10.0;
 end
 NET.layer_lams(numel(layer_dims)).ord_lams = [0.1 0.1];
 
