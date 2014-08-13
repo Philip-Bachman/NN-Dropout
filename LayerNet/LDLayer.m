@@ -215,12 +215,60 @@ classdef LDLayer < handle
                 V = dLdA2 .* A1;
                 V = sum(V, 2);
                 dLdA1 = bsxfun(@rdivide, dLdA2, A1N) - ...
-                    bsxfun(@times, A2, (V ./ (A1N.^2.0)));
+                    bsxfun(@times, A2, (V ./ (A1N.^2)));
                 F = dLdA1 .* dA1dF;
             end
             return
         end
-            
+           
+        function [ F ] = norm_tanh_trans(X, comp_type, dLdA2, Xin, Win)
+            % Transform the elements of X by normed tanh, or do backprop
+            assert((strcmp(comp_type,'ff')||strcmp(comp_type,'bp')),'ff/bp?');
+            EPS = 1e-3;
+            if (strcmp(comp_type,'ff'))
+                % Do feedforward
+                A1 = single(tanh(X));
+                A1N = sqrt(sum(A1.^2,2) + EPS);
+                F = bsxfun(@rdivide, A1, A1N);
+            else
+                % Do backprop
+                A1 = single(tanh(Xin * Win'));
+                A1N = sqrt(sum(A1.^2,2) + EPS);
+                A2 = bsxfun(@rdivide, A1, A1N);
+                % Compute stuff
+                dA1dF = 1 - A1.^2;
+                V = dLdA2 .* A1;
+                V = sum(V, 2);
+                dLdA1 = bsxfun(@rdivide, dLdA2, A1N) - ...
+                    bsxfun(@times, A2, (V ./ (A1N.^2)));
+                F = dLdA1 .* dA1dF;
+            end
+            return
+        end
+           
+        function [ F ] = norm_relu_trans(X, comp_type, dLdA2, Xin, Win)
+            % Transform the elements of X by normed tanh, or do backprop
+            assert((strcmp(comp_type,'ff')||strcmp(comp_type,'bp')),'ff/bp?');
+            EPS = 1e-3;
+            if (strcmp(comp_type,'ff'))
+                % Do feedforward
+                A1 = single(max(X, 0));
+                A1N = sqrt(sum(A1.^2,2) + EPS);
+                F = bsxfun(@rdivide, A1, A1N);
+            else
+                % Do backprop
+                A1 = single(max(Xin * Win', 0));
+                A1N = sqrt(sum(A1.^2,2) + EPS);
+                A2 = bsxfun(@rdivide, A1, A1N);
+                % Compute stuff
+                dA1dF = single((A1 > 0));
+                V = sum(dLdA2 .* A1, 2);
+                dLdA1 = bsxfun(@rdivide, dLdA2, A1N) - ...
+                    bsxfun(@times, A2, (V ./ (A1N.^2)));
+                F = dLdA1 .* dA1dF;
+            end
+            return
+        end
         
         function [ F ] = line_trans(X, comp_type, dLdA, Xin, Win)
             % Leave the values in X unchanged. Or, backprop through the

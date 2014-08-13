@@ -17,7 +17,7 @@ Y = noise(func(X), 0.1);
 opts = struct();
 opts.do_draw = 1; % plot per-round loss on training batches
 opts.lam_l2 = 0; % standard L2 weight decay, often worse than L2 constraint
-opts.rounds = 5000;
+opts.rounds = 15000;
 opts.batch_size = 100;
 opts.dev_reps = 1; % experimental, only matters if LDN.do_dev ~= 1
 opts.do_validate = 1; % whether to check loss on validation sample
@@ -27,16 +27,16 @@ opts.Yv = Yte; % validation outputs
 %%%%%%%%%%%%
 % Init a network, given a list of layer sizes, a hidden layer activation and
 % a loss function to optimize (set loss to loss_lsq for regression).
-layer_sizes = [size(Xtr,2) 100 size(Ytr,2)]; 
-LDN = LDNet(layer_sizes, @LDLayer.norm_rehu_trans, @LDNet.loss_lsq);
+layer_sizes = [size(Xtr,2) 50 50 50 size(Ytr,2)]; 
+LDN = LDNet(layer_sizes, @LDLayer.norm_relu_trans, @LDNet.loss_lsq);
 LDN.lam_l2a = zeros(size(layer_sizes)); % L2 regularization on activations
-LDN.lam_l2 = 1e-3; % Standard L2 regularization on network weights
+LDN.lam_l2 = 1e-4; % Standard L2 regularization on network weights
 LDN.wt_bnd = 100; % L2 constraint on weights into each hidden node
 LDN.drop_input = 0; % drop rate at input layer
 LDN.drop_hidden = 0; % drop rate at hidden layers
 LDN.drop_undrop = 0; % rate to pass samples drop-free
 LDN.bias_noise = 0; % noise to perturb activations during training
-LDN.weight_noise = 0.02; % noise to perturb weights during training
+LDN.weight_noise = 0.01; % noise to perturb weights during training
 %%%%%%%%%%%%
 % These are experimental regularizer params, probably best left at 0
 LDN.dev_lams = zeros(size(layer_sizes));
@@ -46,15 +46,15 @@ LDN.do_dev = 0;
 %%%%%%%%%%%%
 
 % Initialize network weights and biases
-LDN.init_weights(0.05, 0.0);
+LDN.init_weights(0.05, 0.05);
 
 % Set core learning params and train a bit
 opts.momentum = 0.9;
 opts.decay_rate = 0.2^(1 / opts.rounds);
-opts.start_rate = 0.01;
+opts.start_rate = 0.05;
 LDN.train(Xtr,Ytr,opts);
 
 % Plot the function learned by LDN
-plot_netfunc(X, Y, LDN, 64, 0.25);
+plot_netfunc(X, Y, LDN, 50, 0.25);
 
 
